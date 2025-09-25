@@ -1,13 +1,13 @@
 #!/usr/bin/python3
 # coding=utf8
-# 麦克纳姆轮底盘运动学(Mecanum wheel chassis kinematic)
+# 메카넘 휠 차체 운동학(Mecanum wheel chassis kinematic)
 import math
 from ros_robot_controller_msgs.msg import MotorState, MotorsState
 
 class MecanumChassis:
-    # wheelbase = 0.1368   # 前后轴距(distance between front and real axles)
-    # track_width = 0.1446 # 左右轴距(distance between left and right axles)
-    # wheel_diameter = 0.065  # 轮子直径(wheel diameter)
+    # wheelbase = 0.1368   # 전후 축간 거리 (앞바퀴와 뒷바퀴 사이 거리)
+    # track_width = 0.1446 # 좌우 축간 거리 (좌우 바퀴 사이 거리)
+    # wheel_diameter = 0.065  # 바퀴 지름
     def __init__(self, wheelbase=0.1368, track_width=0.1410, wheel_diameter=0.065):
         self.wheelbase = wheelbase
         self.track_width = track_width
@@ -15,6 +15,7 @@ class MecanumChassis:
 
     def speed_covert(self, speed):
         """
+        선속도(m/s) -> 회전속도(rps) 변환
         covert speed m/s to rps/s
         :param speed:
         :return:
@@ -22,6 +23,7 @@ class MecanumChassis:
         # distance / circumference = rotations per second
         return speed / (math.pi * self.wheel_diameter)
 
+    # linear_x: 전진/후진 속도(m/s), linear_y: 좌우 이동 속도(m/s), angular_z: 제자리 회전 속도(rad/s)
     def set_velocity(self, linear_x, linear_y, angular_z):
         """
         Use polar coordinates to control moving
@@ -47,6 +49,7 @@ class MecanumChassis:
         motor2 = (linear_x + linear_y - angular_z * (self.wheelbase + self.track_width) / 2)
         motor3 = (linear_x + linear_y + angular_z * (self.wheelbase + self.track_width) / 2)
         motor4 = (linear_x - linear_y + angular_z * (self.wheelbase + self.track_width) / 2)
+        # 모터별 속도를 rps로 변환
         v_s = [self.speed_covert(v) for v in [-motor1, -motor2, motor3, motor4]]
         data = []
         for i in range(len(v_s)):
@@ -56,5 +59,5 @@ class MecanumChassis:
             data.append(msg)
         
         msg = MotorsState()
-        msg.data = data
+        msg.data = data     # 각각의 rps 속도
         return msg

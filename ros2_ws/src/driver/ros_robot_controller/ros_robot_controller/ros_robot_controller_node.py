@@ -4,6 +4,8 @@
 # @Date: 2023/08/28
 # stm32 ros2 package
 
+# 로봇 몸체와 ROS2 소프트웨어 사이 브리지 역할
+
 import math
 import time
 import rclpy
@@ -36,11 +38,13 @@ class RosRobotController(Node):
         self.declare_parameter('init_finish', False)
         self.IMU_FRAME = self.get_parameter('imu_frame').value
 
+        # 퍼블리셔 등록
         self.imu_pub = self.create_publisher(Imu, '~/imu_raw', 1)
         self.joy_pub = self.create_publisher(Joy, '~/joy', 1)
         self.sbus_pub = self.create_publisher(Sbus, '~/sbus', 1)
         self.button_pub = self.create_publisher(ButtonState, '~/button', 1)
         self.battery_pub = self.create_publisher(UInt16, '~/battery', 1)
+        # 서브스크립션 등록
         self.create_subscription(LedState, '~/set_led', self.set_led_state, 5)
         self.create_subscription(BuzzerState, '~/set_buzzer', self.set_buzzer_state, 5)
         self.create_subscription(OLEDState, '~/set_oled', self.set_oled_state, 5)
@@ -49,6 +53,7 @@ class RosRobotController(Node):
         self.create_subscription(SetBusServoState, '~/bus_servo/set_state', self.set_bus_servo_state, 10)
         self.create_subscription(ServosPosition, '~/bus_servo/set_position', self.set_bus_servo_position, 10)
         self.create_subscription(SetPWMServoState, '~/pwm_servo/set_state', self.set_pwm_servo_state, 10)
+        # 서비스 등록
         self.create_service(GetBusServoState, '~/bus_servo/get_state', self.get_bus_servo_state)
         self.create_service(GetPWMServoState, '~/pwm_servo/get_state', self.get_pwm_servo_state)
         self.create_subscription(RGBStates, '~/set_rgb', self.set_rgb_states, 10)
@@ -66,7 +71,7 @@ class RosRobotController(Node):
 
     def load_servo_offsets(self):
         """
-        从 YAML 文件中读取舵机偏差设置。
+        YAML 파일에서 서보 모터 오프셋값을 읽어와 적용
         """
         config_path = '/home/ubuntu/software/Servo_upper_computer/servo_config.yaml'
         try:
@@ -75,37 +80,38 @@ class RosRobotController(Node):
 
             # 确保config是字典
             if not isinstance(config, dict):
-                self.get_logger().error(f"YAML 配置文件格式错误: {config_path}，应为字典格式。")
+                self.get_logger().error(f"YAML 설정 파일 형식 오류: {config_path}，应为字典格式。")
                 return
 
-            # 遍历ID1到ID4并设置偏移量
+            # ID1 ~ ID4에 대해 오프셋 적용
             for servo_id in range(1, 5):
-                offset = config.get(servo_id, 0)  # 如果未找到，默认偏移量为0
+                offset = config.get(servo_id, 0)  # 기본값 0
                 try:
                     self.board.pwm_servo_set_offset(servo_id, offset)
-                    self.get_logger().info(f"已设置舵机 {servo_id} 的偏移量为 {offset}")
+                    self.get_logger().info(f"서보 {servo_id}의 오프셋을 {offset}으로 설정 완료")
                 except Exception as e:
-                    self.get_logger().error(f"设置舵机 {servo_id} 偏移量时出错: {e}")
+                    self.get_logger().error(f"서보 {servo_id} 오프셋 설정 중 오류: {e}")
 
         except FileNotFoundError:
-            self.get_logger().error(f"配置文件未找到: {config_path}")
+            self.get_logger().error(f"설정 파일 없음: {config_path}")
         except yaml.YAMLError as e:
-            self.get_logger().error(f"解析 YAML 文件时出错: {e}")
+            self.get_logger().error(f"YAML 파일 파싱 오류: {e}")
         except Exception as e:
-            self.get_logger().error(f"读取配置文件时出错: {e}")
+            self.get_logger().error(f"설정 파일 읽기 오류: {e}")
 
     def get_node_state(self, request, response):
         response.success = True
         return response
 
+    # 센서 데이터 퍼블리시
     def pub_callback(self):
         while self.running:
             if getattr(self, 'enable_reception', False):
-                self.pub_button_data(self.button_pub)
-                self.pub_joy_data(self.joy_pub)
-                self.pub_imu_data(self.imu_pub)
-                self.pub_sbus_data(self.sbus_pub)
-                self.pub_battery_data(self.battery_pub)
+                self.pub_button_data(self.button_pub)   # 버튼상태
+                self.pub_joy_data(self.joy_pub)     # 조이스틱
+                self.pub_imu_data(self.imu_pub)     # IMU
+                self.pub_sbus_data(self.sbus_pub)   # Sbus
+                self.pub_battery_data(self.battery_pub)     # 베터리 전압
                 time.sleep(0.02)
             else:
                 time.sleep(0.02)
@@ -116,27 +122,33 @@ class RosRobotController(Node):
         self.enable_reception = msg.data
         self.board.enable_reception(msg.data)
 
+    # LED 제어
     def set_led_state(self, msg):
         self.board.set_led(msg.on_time, msg.off_time, msg.repeat, msg.id)
 
+    # 부저 제어
     def set_buzzer_state(self, msg):
         self.board.set_buzzer(msg.freq, msg.on_time, msg.off_time, msg.repeat)
     
+    # RGB LED
     def set_rgb_states(self, msg):
         pixels = []
         for state in msg.states:
             pixels.append((state.index, state.red, state.green, state.blue))
         self.board.set_rgb(pixels)
 
+    # 모터 제어
     def set_motor_state(self, msg):
         data = []
         for i in msg.data:
             data.extend([[i.id, i.rps]])
         self.board.set_motor_speed(data)
 
+    # OLED
     def set_oled_state(self, msg):
         self.board.set_oled_text(int(msg.index), msg.text)
 
+    # PWM 서보
     def set_pwm_servo_state(self, msg):
         data = []
         for i in msg.state:
@@ -163,6 +175,7 @@ class RosRobotController(Node):
             states.append(data)
         return [True, states]
 
+    # Bus 서보
     def set_bus_servo_position(self, msg):
         data = []
         for i in msg.position:
@@ -170,6 +183,7 @@ class RosRobotController(Node):
         if data:
             self.board.bus_servo_set_position(msg.duration, data)
 
+    # Bus 서보
     def set_bus_servo_state(self, msg):
         data = []
         servo_id = []
@@ -302,6 +316,7 @@ class RosRobotController(Node):
             msg.header.stamp = self.clock.now().to_msg()
             pub.publish(msg)
 
+    # IMU 데이터 처리
     def pub_imu_data(self, pub):
         data = self.board.get_imu()
         if data is not None:
@@ -339,7 +354,7 @@ def main():
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # 安全关闭电机速度
+        # 안전 종료: 모터 속도 0으로 설정
         node.board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
         node.destroy_node()
         rclpy.shutdown()

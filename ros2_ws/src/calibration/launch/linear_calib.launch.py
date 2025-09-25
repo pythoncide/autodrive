@@ -6,7 +6,7 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def generate_launch_description():
-    # 底盘控制(chassis control)
+    # 로봇 주행 제어(Chassis control)
     controller_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             get_package_share_directory('controller'),
@@ -14,14 +14,14 @@ def generate_launch_description():
         ])
     )
 
-    # 线速度校准(linear velocity calibration)
+    # 선속도 보정(Linear velocity calibration)
     calibrate_linear_node = Node(
         package='calibration',
         executable='calibrate_linear',
         output='screen'
     )
 
-    # rqt
+    # rqt_reconfigure GUI 실행 (실시간 파라미터 조정용)
     calibrate_rqt_reconfigure_node = Node(
         package='rqt_reconfigure',
         executable='rqt_reconfigure',

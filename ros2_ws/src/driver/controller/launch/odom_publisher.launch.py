@@ -1,3 +1,5 @@
+# 오도메트리 퍼블리셔 노드를 실행하는 런치 파일
+# 로봇의 TF 구조 + 하드웨어 제어 + 오도메트리 퍼블리시가 동시에 준비
 import os
 from ament_index_python.packages import get_package_share_directory
 
@@ -11,10 +13,10 @@ def generate_launch_description():
     compiled = os.environ['need_compile']
     namespace = LaunchConfiguration('namespace', default='')
     use_namespace = LaunchConfiguration('use_namespace', default='false')
-    odom_frame = LaunchConfiguration('odom_frame', default='odom')
-    base_frame = LaunchConfiguration('base_frame', default='base_footprint')
-    imu_frame = LaunchConfiguration('imu_frame', default='imu_link')
-    frame_prefix = LaunchConfiguration('frame_prefix', default='')
+    odom_frame = LaunchConfiguration('odom_frame', default='odom')  # 오도메트리 좌표계 이름
+    base_frame = LaunchConfiguration('base_frame', default='base_footprint')    # 로봇 본체 좌표계
+    imu_frame = LaunchConfiguration('imu_frame', default='imu_link')    # IMU 센서 좌표계
+    frame_prefix = LaunchConfiguration('frame_prefix', default='')  # 프레임 앞에 붙일 접두사
 
     namespace_arg = DeclareLaunchArgument('namespace', default_value=namespace)
     use_namespace_arg = DeclareLaunchArgument('use_namespace', default_value=use_namespace)
@@ -23,6 +25,7 @@ def generate_launch_description():
     imu_frame_arg = DeclareLaunchArgument('imu_frame', default_value=imu_frame)
     frame_prefix_arg = DeclareLaunchArgument('frame_prefix', default_value=frame_prefix)
 
+    # 패키지 경로 설정
     if compiled == 'True':
         rosmentor_description_package_path = get_package_share_directory('mentorpi_description')
         robot_controller_package_path = get_package_share_directory('ros_robot_controller')
@@ -32,6 +35,7 @@ def generate_launch_description():
         robot_controller_package_path = '/home/ubuntu/ros2_ws/src/driver/ros_robot_controller'
         controller_package_path = '/home/ubuntu/ros2_ws/src/driver/controller'
 
+    # 로봇의 좌표계(TF) 구조를 정의
     robot_description_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(rosmentor_description_package_path, 'launch/robot_description.launch.py')
         ]),
@@ -45,6 +49,7 @@ def generate_launch_description():
         }.items()
     )
 
+    # 센서와 로봇 하드웨어 제어 연결
     robot_controller_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(robot_controller_package_path, 'launch/ros_robot_controller.launch.py')
         ]),

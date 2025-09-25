@@ -13,6 +13,8 @@ from controller import ackermann, mecanum
 from ros_robot_controller_msgs.msg import MotorsState, SetPWMServoState, PWMServoState
 from geometry_msgs.msg import Pose2D, Pose, Twist, PoseWithCovarianceStamped, TransformStamped
 
+# COVARIANCE: 로봇이 움직임
+# STOP: 로봇이 정지함
 ODOM_POSE_COVARIANCE = list(map(float, 
                         [1e-3, 0, 0, 0, 0, 0, 
                         0, 1e-3, 0, 0, 0, 0,
@@ -45,6 +47,7 @@ ODOM_TWIST_COVARIANCE_STOP = list(map(float,
                               0, 0, 0, 0, 1e6, 0,
                               0, 0, 0, 0, 0, 1e-9]))
 
+# RPY → Quaternion 변환
 def rpy2qua(roll, pitch, yaw):
     cy = math.cos(yaw*0.5)
     sy = math.sin(yaw*0.5)
@@ -60,7 +63,9 @@ def rpy2qua(roll, pitch, yaw):
     q.orientation.z = sy * cp * cr - cy * sp * sr
     return q.orientation
 
+# Quaternion → RPY 변환
 def qua2rpy(x, y, z, w):
+    # yaw: 로봇의 방향각(Z축 회전각)
     roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
     pitch = math.asin(2 * (w * y - x * z))
     yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (z * z + y * y))
@@ -83,16 +88,20 @@ class Controller(Node):
         self.current_time = None
         signal.signal(signal.SIGINT, self.shutdown)
 
+        # 모델 초기화
         self.ackermann = ackermann.AckermannChassis(wheelbase=0.145, track_width=0.133, wheel_diameter=0.067)
         self.mecanum = mecanum.MecanumChassis(wheelbase=0.1368, track_width=0.1446, wheel_diameter=0.065)
 
         # Declare parameters
-        self.declare_parameter('pub_odom_topic', True)
+        self.declare_parameter('pub_odom_topic', True) # 오도메트리 퍼블리시 여부
+        # TF 프레임 이름
         self.declare_parameter('base_frame_id', 'base_footprint')
         self.declare_parameter('odom_frame_id', 'odom')
+        # 보정 계수
         self.declare_parameter('linear_correction_factor', 1.00)
         self.declare_parameter('linear_correction_factor_tank', 0.52)
         self.declare_parameter('angular_correction_factor', 1.00)
+        # 로봇 타입
         self.declare_parameter('machine_type', os.environ['MACHINE_TYPE'])
         
         self.pub_odom_topic = self.get_parameter('pub_odom_topic').value
@@ -216,7 +225,10 @@ class Controller(Node):
     #             data.state = [servo_state]
     #             data.duration = 0.02
     #             self.servo_state_pub.publish(data)
+    
+    # 속도 명령 처리(Mecanum: 모터 속도만)
     def cmd_vel_callback(self, msg):
+        # 각 바퀴 속도로 변환
         if self.machine_type == 'MentorPi_Mecanum':
             self.linear_x = msg.linear.x
             self.linear_y = msg.linear.y
@@ -248,6 +260,7 @@ class Controller(Node):
                 speeds = self.ackermann.set_velocity(self.linear_x, self.angular_z)
                 self.motor_pub.publish(speeds[1])
 
+    # 오도메트리 계산
     def cal_odom_fun(self):
         while True:
             self.current_time = time.time()
@@ -258,6 +271,7 @@ class Controller(Node):
 
             self.odom.header.stamp = self.clock.now().to_msg()
             
+            # 속도 명령(linear_x, angular_z)을 적분 ~> 자기 위치(x,y,yaw) 추정
             delta_x = self.linear_x * self.dt * math.cos(self.pose_yaw)
             delta_y = self.linear_x * self.dt * math.sin(self.pose_yaw)
             delta_yaw = self.angular_z * self.dt
@@ -266,6 +280,7 @@ class Controller(Node):
             self.y += delta_y
             self.pose_yaw += delta_yaw
 
+            # 보정 계수(linear_factor, angular_factor)를 적용해서 오차 줄임
             self.odom.pose.pose.position.x = self.linear_factor * self.x
             self.odom.pose.pose.position.y = self.linear_factor * self.y
             self.odom.pose.pose.orientation = rpy2qua(0.0, 0.0, self.pose_yaw)
@@ -280,7 +295,7 @@ class Controller(Node):
                 self.odom.pose.covariance = ODOM_POSE_COVARIANCE
                 self.odom.twist.covariance = ODOM_TWIST_COVARIANCE
 
-            self.odom_pub.publish(self.odom)
+            self.odom_pub.publish(self.odom)    # 결과를 odom_raw 토픽으로 퍼블리시
             self.last_time = self.current_time
             time.sleep(0.02)
 

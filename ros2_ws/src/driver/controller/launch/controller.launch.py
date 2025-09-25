@@ -11,14 +11,16 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Grou
 
 def launch_setup(context):
     compiled = os.environ['need_compile']
-    namespace = LaunchConfiguration('namespace', default='')
-    use_namespace = LaunchConfiguration('use_namespace', default='false').perform(context)
-    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
-    enable_odom = LaunchConfiguration('enable_odom', default='true')
+    namespace = LaunchConfiguration('namespace', default='')    # 이름 구분용
+    use_namespace = LaunchConfiguration('use_namespace', default='false').perform(context)  # 네임스페이스 적용 여부
+    use_sim_time = LaunchConfiguration('use_sim_time', default='false') # 시뮬레이션 시간 사용 여부
+    enable_odom = LaunchConfiguration('enable_odom', default='true')    # 오도메트리 노드 실행 여부
+    # TF 프레임들
     map_frame = LaunchConfiguration('map_frame', default='map')
     odom_frame = LaunchConfiguration('odom_frame', default='odom')
     base_frame = LaunchConfiguration('base_frame', default='base_footprint')
     imu_frame = LaunchConfiguration('imu_frame', default='imu_link')
+    # 프레임 이름 앞에 붙일 prefix
     frame_prefix = LaunchConfiguration('frame_prefix', default='')
 
     namespace_arg = DeclareLaunchArgument('namespace', default_value=namespace)
@@ -38,7 +40,7 @@ def launch_setup(context):
         peripherals_package_path = '/home/ubuntu/ros2_ws/src/peripherals'
         controller_package_path = '/home/ubuntu/ros2_ws/src/driver/controller'
 
-
+    # 로봇의 오도메트리 퍼블리셔 실행
     odom_publisher_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(controller_package_path, 'launch/odom_publisher.launch.py')
         ]),
@@ -57,6 +59,7 @@ def launch_setup(context):
         ])
     )
 
+    # IMU + Odom 데이터를 EKF로 융합해서 최종 odometry(odom)를 퍼블리시
     if use_namespace == 'false':
         ekf_param = ReplaceString(source_file=os.path.join(controller_package_path, 'config/ekf.yaml'), replacements={'namespace/': ''})
     else:
@@ -93,6 +96,7 @@ def launch_setup(context):
         ekf_filter_node,
     ]
 
+# 런치 실행 시 실제 노드들이 켜짐
 def generate_launch_description():
     return LaunchDescription([
         OpaqueFunction(function = launch_setup)
