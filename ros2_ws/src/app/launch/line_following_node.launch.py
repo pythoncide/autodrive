@@ -1,3 +1,4 @@
+# 라인 추종 제어 (라이다 + 깊이 카메라 활용)
 import os
 
 from launch_ros.actions import Node

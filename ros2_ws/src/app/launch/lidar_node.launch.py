@@ -8,6 +8,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.actions import IncludeLaunchDescription, OpaqueFunction, GroupAction, DeclareLaunchArgument
 
 def launch_setup(context):
+    # 환경변수 처리
     compiled = os.environ['need_compile']
     debug = LaunchConfiguration('debug', default='false')
     debug_arg = DeclareLaunchArgument('debug', default_value=debug)
@@ -18,19 +19,23 @@ def launch_setup(context):
         controller_package_path = '/home/ubuntu/ros2_ws/src/driver/controller'
         peripherals_package_path = '/home/ubuntu/ros2_ws/src/peripherals'
 
+    # 여러 런치/노드를 묶어서 실행
     lidar_controller_node = GroupAction([
+        # 라이다 센서 드라이버 실행
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(peripherals_package_path, 'launch/lidar.launch.py')),
             condition=IfCondition(debug),
             ),
 
+        # 로봇 제어 노드 실행
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(controller_package_path, 'launch/controller.launch.py')),
             condition=IfCondition(debug),
             ),
 
+        # 항상 실행
         Node(
             package='app',
             executable='lidar_controller',
@@ -48,7 +53,7 @@ def generate_launch_description():
     ])
 
 if __name__ == '__main__':
-    # 创建一个LaunchDescription对象(create a LaunchDescription object)
+    # LaunchDescription 객체 생성
     ld = generate_launch_description()
 
     ls = LaunchService()

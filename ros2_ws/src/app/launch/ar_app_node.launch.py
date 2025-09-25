@@ -1,3 +1,4 @@
+# AR app 실행(증강현실 관련)
 import os
 
 from launch_ros.actions import Node

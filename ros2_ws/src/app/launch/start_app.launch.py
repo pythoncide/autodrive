@@ -1,3 +1,4 @@
+# 앱 기능(라인트레이싱, 객체추적 등) 실행
 import os
 from ament_index_python.packages import get_package_share_directory
 
@@ -6,6 +7,7 @@ from launch.actions import IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def launch_setup(context):
+    # 경로 설정
     compiled = os.environ['need_compile']
     if compiled == 'True':
         app_package_path = get_package_share_directory('app')
@@ -50,7 +52,7 @@ def generate_launch_description():
     ])
 
 if __name__ == '__main__':
-    # 创建一个LaunchDescription对象(create a LaunchDescription object)
+    # LaunchDescription 객체 생성
     ld = generate_launch_description()
 
     ls = LaunchService()

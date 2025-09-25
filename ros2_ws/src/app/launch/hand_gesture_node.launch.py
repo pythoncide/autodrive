@@ -1,3 +1,4 @@
+# 손 동작 인식
 import os
 
 from launch_ros.actions import Node
