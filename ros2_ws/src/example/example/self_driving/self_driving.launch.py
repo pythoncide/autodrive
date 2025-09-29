@@ -40,7 +40,7 @@ def launch_setup(context):
         package='yolov5_ros2',
         executable='yolo_detect',
         output='screen',
-        parameters=[{'classes': ['cross_walk', 'light_green', 'light_red', 'light_yellow', 'parking', 'right', 'straight']},
+        parameters=[{'classes': ['cross_walk', 'light_green', 'light_red','light_yellow', 'parking', 'right', 'straight']},
             {"device": "cpu",
             "model": "tfs_ver2",
             "image_topic": "/ascamera/camera_publisher/rgb0/image",
@@ -71,11 +71,10 @@ def generate_launch_description():
         OpaqueFunction(function = launch_setup)
     ])
 
-if __name__ == '__main__':
+if __name__ == 'main':
     # 创建一个LaunchDescription对象
     ld = generate_launch_description()
 
     ls = LaunchService()
     ls.include_launch_description(ld)
     ls.run()
-
