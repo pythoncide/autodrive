@@ -42,7 +42,7 @@ def launch_setup(context):
         output='screen',
         parameters=[{'classes': ['cross_walk', 'light_green', 'light_red','light_yellow', 'parking', 'right', 'straight']},
             {"device": "cpu",
-            "model": "tfs_ver2",
+            "model": "bestn",
             "image_topic": "/ascamera/camera_publisher/rgb0/image",
             "camera_info_topic": "/camera/camera_info",
             "camera_info_file": f"{package_share_directory}/config/camera_info.yaml",
