@@ -40,14 +40,16 @@ def launch_setup(context):
         package='yolov5_ros2',
         executable='yolo_detect',
         output='screen',
-        parameters=[{'classes': ['cross_walk', 'light_green', 'light_red','light_yellow', 'parking', 'right', 'straight']},
-            {"device": "cpu",
-            "model": "tfs_ver2",
+        parameters=[{
+            "device": "cpu",
+            "model": "best_model",  # => yolov5_ros2/config/best_model.onnx 사용
             "image_topic": "/ascamera/camera_publisher/rgb0/image",
-            "camera_info_topic": "/camera/camera_info",
-            "camera_info_file": f"{package_share_directory}/config/camera_info.yaml",
             # "show_result": True,
-            "pub_result_img": True}]
+            "pub_result_img": True,
+            "conf_thres": 0.30,
+            "iou_thres": 0.45,
+            "img_size": 640
+        }]
     )
 
     self_driving_node = Node(
@@ -71,7 +73,7 @@ def generate_launch_description():
         OpaqueFunction(function = launch_setup)
     ])
 
-if __name__ == 'main':
+if __name__ == '__main__':
     # 创建一个LaunchDescription对象
     ld = generate_launch_description()
 
