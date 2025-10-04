@@ -64,7 +64,7 @@ def launch_setup(context):
         ekf_param = ReplaceString(source_file=os.path.join(controller_package_path, 'config/ekf.yaml'), replacements={'namespace/': ''})
     else:
         ekf_param = ReplaceString(source_file=os.path.join(controller_package_path, 'config/ekf.yaml'), replacements={"namespace/": (namespace, '/')})
-    
+    """
     ekf_filter_node = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -78,7 +78,7 @@ def launch_setup(context):
             ('cmd_vel', 'controller/cmd_vel')
         ],
         condition=IfCondition(enable_odom),
-    )
+    )"""
 
 
     return [
@@ -93,7 +93,7 @@ def launch_setup(context):
         frame_prefix_arg,
         imu_filter_launch,
         odom_publisher_launch,
-        ekf_filter_node,
+        #ekf_filter_node,
     ]
 
 # 런치 실행 시 실제 노드들이 켜짐
