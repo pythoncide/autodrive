@@ -26,22 +26,23 @@ from sdk.common import colors, plot_one_box
 from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState
+from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState
 
 
 class SelfDrivingNode(Node):
     def __init__(self, name):   
         rclpy.init()
-        super().__init__(name,
-                         allow_undeclared_parameters=True,
-                         automatically_declare_parameters_from_overrides=True)
+        super().__init__(
+            name,
+            allow_undeclared_parameters=True,
+            automatically_declare_parameters_from_overrides=True
+        )
 
+        # [1] 기본 속성 초기화
         self.name = name
         self.is_running = True
         self.pid = pid.PID(0.4, 0.0, 0.05)
-        self.param_init()
-
-        self.debug = False   # debug 
+        self.debug = False
         self.fps = fps.FPS()
         self.image_queue = queue.Queue(maxsize=2)
         self.classes = ['cross_walk', 'light_green', 'light_red', 'light_yellow', 'parking', 'right', 'straight']
@@ -52,16 +53,18 @@ class SelfDrivingNode(Node):
         self.machine_type = os.environ.get('MACHINE_TYPE')
         self.lane_detect = lane_detect.LaneDetector("yellow")
 
-        # publishers
+        # [2] 퍼블리셔를 먼저 생성 (param_init에서 LED 제어 호출함)
         self.mecanum_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.servo_state_pub = self.create_publisher(SetPWMServoState, 'ros_robot_controller/pwm_servo/set_state', 1)
         self.result_publisher = self.create_publisher(Image, '~/image_result', 1)
+        self.rgb_pub = self.create_publisher(RGBStates, '/ros_robot_controller/set_rgb', 1)
 
-        # services
+        # [3] 서비스 생성
         self.create_service(Trigger, '~/enter', self.enter_srv_callback)
         self.create_service(Trigger, '~/exit', self.exit_srv_callback)
         self.create_service(SetBool, '~/set_running', self.set_running_srv_callback)
 
+        # [4] Yolov5 관련 클라이언트 초기화
         timer_cb_group = ReentrantCallbackGroup()
         self.client = self.create_client(Trigger, '/yolov5_ros2/init_finish')
         self.client.wait_for_service()
@@ -70,7 +73,13 @@ class SelfDrivingNode(Node):
         self.stop_yolov5_client = self.create_client(Trigger, '/yolov5/stop', callback_group=timer_cb_group)
         self.stop_yolov5_client.wait_for_service()
 
+        # [5] 파라미터 초기화 (여기서 LED RED 켜짐)
+        self.param_init()
+
+        # [6] 타이머 등록 및 초기화 로직 실행
         self.timer = self.create_timer(0.0, self.init_process, callback_group=timer_cb_group)
+
+        self.get_logger().info('\033[1;32m[SelfDrivingNode Initialized]\033[0m')
 
     def init_process(self):
         self.timer.cancel()
@@ -145,6 +154,8 @@ class SelfDrivingNode(Node):
         self.right_turn_time = 2.50      # 우회전 지속
         self.right_turn_angular = -0.60  # 우회전 각속도(좌핸들 기준 음수)
 
+        self.set_rgb_color(255, 0, 0)  # 초기 상태 빨강 (대기/정지)
+
     def get_node_state(self, request, response):
         response.success = True
         return response
@@ -188,6 +199,46 @@ class SelfDrivingNode(Node):
         response.success = True
         response.message = "set_running"
         return response
+    
+    # led 색상 제어
+    def set_rgb_color(self, r, g, b):
+        msg = RGBStates()
+        
+        # 첫 번째 LED
+        led1 = RGBState()
+        led1.index = 1
+        led1.red = r
+        led1.green = g
+        led1.blue = b
+        msg.states.append(led1)
+
+        # 두 번째 LED
+        led2 = RGBState()
+        led2.index = 2
+        led2.red = r
+        led2.green = g
+        led2.blue = b
+        msg.states.append(led2)
+
+        self.rgb_pub.publish(msg)
+
+    # led 개별 제어
+    def set_rgb_dual(self, color1, color2):
+        msg = RGBStates()
+
+        led1 = RGBState()
+        led1.index = 1
+        led1.red, led1.green, led1.blue = color1
+        msg.states.append(led1)
+
+        led2 = RGBState()
+        led2.index = 2
+        led2.red, led2.green, led2.blue = color2
+        msg.states.append(led2)
+
+        self.rgb_pub.publish(msg)
+
+
 
     def shutdown(self, signum, frame):
         self.is_running = False
@@ -222,9 +273,11 @@ class SelfDrivingNode(Node):
                 # self.get_logger().info(f'\033[1;32mlane_angle: {lane_angle}\033[0m')    # 李⑥꽑 媛곷룄 (吏꾪뻾 諛⑺뼢)
                 t = now()
                 if self.cw_state == 'idle':
+                    self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
                     if self.crosswalk_detected:
                         self.cw_state = 'stopping'
                         self.cw_ts = t
+                        self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
                         self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
                 elif self.cw_state == 'stopping':
                     if t - self.cw_ts < 3.0:
@@ -238,12 +291,14 @@ class SelfDrivingNode(Node):
                         # 정지 완료 → 쿨다운 진입
                         self.cw_state = 'cooldown'
                         self.cw_ts = t
+                        self.set_rgb_color(0, 255, 0)  # 출발 (초록)
                         # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
                         self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
                 elif self.cw_state == 'cooldown':
                     if t - self.cw_ts >= self.crosswalk_cooldown_duration:
                         self.cw_state = 'idle'
                         self.cw_ts = None
+                        self.set_rgb_color(0, 255, 0)  # 주행(초록)
                         self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
 
                 if self.cw_state != 'stopping':
@@ -270,12 +325,19 @@ class SelfDrivingNode(Node):
                             twist.linear.x = self.slow_down_speed
                             twist.angular.z = self.right_turn_angular
                             self.mecanum_pub.publish(twist)
+
+                            # 우회전 중 LED 깜빡이기 (0.3초 간격)
+                            if int((t * 2) % 2) == 0:  # 약 0.5초 단위 토글
+                                self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 왼쪽=초록, 오른쪽=노랑
+                            else:
+                                self.set_rgb_dual((0, 255, 0), (0, 0, 0))      # 오른쪽 OFF
                             continue
                         else:
                             # 시퀀스 종료 및 리셋
                             self.right_state = 'idle'
                             self.right_ts = None
                             self.right_cnt = 0
+                            self.set_rgb_color(0, 255, 0)  # 주행 (초록)
                             self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
 
                     
