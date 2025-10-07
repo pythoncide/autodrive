@@ -53,6 +53,14 @@ class SelfDrivingNode(Node):
         self.machine_type = os.environ.get('MACHINE_TYPE')
         self.lane_detect = lane_detect.LaneDetector("yellow")
 
+        # self.lane_detect = lane_detect.LaneDetector("yellow") 바로 아래
+        self.rois_default = tuple(self.lane_detect.rois)       # 기존 ROI 백업
+        r0 = self.rois_default[0]                               # 가장 아래 ROI 하나만
+        self.rois_near = ((r0[0], r0[1], r0[2], r0[3], 1.0),)   # 하단 ROI만, 가중치 1.0
+        self.after_turn_window = 1.2                            # 턴 직후 1.2초만 하단 ROI 사용
+        self.after_turn_ts = None
+
+
         # [2] 퍼블리셔를 먼저 생성 (param_init에서 LED 제어 호출함)
         self.mecanum_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.servo_state_pub = self.create_publisher(SetPWMServoState, 'ros_robot_controller/pwm_servo/set_state', 1)
@@ -150,7 +158,7 @@ class SelfDrivingNode(Node):
         # 튜닝 파라미터: 로그 4~6회(≈연속 프레임)면 라치
         self.right_on_threshold = 4      # 4 이상에서 라치
         # 동작 시간(초): 코스에 맞게 조정
-        self.right_forward_time = 1.50   # 전진 지속
+        self.right_forward_time = 1.30   # 전진 지속
         self.right_turn_time = 2.50      # 우회전 지속
         self.right_turn_angular = -0.60  # 우회전 각속도(좌핸들 기준 음수)
 
@@ -185,6 +193,19 @@ class SelfDrivingNode(Node):
             (255, 0, 255),  # M
             (255, 255, 255) # W
         ]
+
+        # --- RED LIGHT STOP ---
+        self.tl_state = 'idle'      # 'idle' | 'red'
+        self.red_seen = False
+        self.red_cnt = 0
+        self.tl_on_threshold = 3    # 빨간불 연속 감지 프레임 수 (튜닝)
+        self.last_red_seen_ts = None
+        self.tl_release_gap = 0.6   # 해제: 빨간불이 안 보인 시간(초)
+        self.cw_freeze_start = None
+
+        self.lx_prev = None
+        self.lx_alpha = 0.6   # 0.0~1.0, 클수록 새 값 가중 ↑
+        self.lx_jump = 40     # 한 프레임에서 허용할 최대 이동 픽셀
 
 
 
@@ -296,6 +317,37 @@ class SelfDrivingNode(Node):
             self.image_queue.get()
         self.image_queue.put(cv_image)
 
+    def handle_red_light(self):
+        """빨간불이면 완전 정지, 빨간불이 사라지면 해제. True 리턴 시 이 프레임은 정지 처리."""
+        # 파킹/우회전 진행 중이면 신호 무시(기존 정책 유지)
+        if (self.park_state != 'idle') or (self.right_state != 'idle'):
+            return False
+
+        # 진입 조건: 빨간불 연속 감지
+        if self.tl_state == 'idle':
+            if self.red_cnt >= self.tl_on_threshold:
+                self.tl_state = 'red'
+                self.cw_freeze_start = now()
+                self.set_rgb_color(255, 0, 0)
+                self.get_logger().info('\033[1;31m[TL] RED → STOP\033[0m')
+
+        # 유지/해제
+        if self.tl_state == 'red':
+            if self.last_red_seen_ts is not None and (now() - self.last_red_seen_ts) > self.tl_release_gap:
+                # 빨간불 정지 동안 CW 쿨다운 멈추기
+                if self.cw_freeze_start is not None and self.cw_state == 'cooldown' and self.cw_ts is not None:
+                    self.cw_ts += (now() - self.cw_freeze_start)
+                self.cw_freeze_start = None
+                self.tl_state = 'idle'
+                self.red_cnt = 0
+                self.set_rgb_color(0, 255, 0)
+                self.get_logger().info('\033[1;32m[TL] GO (red gone)\033[0m')
+            else:
+                self.mecanum_pub.publish(Twist())  # 계속 정지
+                return True
+
+        return False
+
     def main(self):
         while self.is_running:
             time_start = time.time()
@@ -318,7 +370,31 @@ class SelfDrivingNode(Node):
                 result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())
                 # self.get_logger().info(f'\033[1;32mlane_x: {lane_x}\033[0m') # 寃�異쒕맂 李⑥꽑 以묒떖??x醫뚰몴
                 # self.get_logger().info(f'\033[1;32mlane_angle: {lane_angle}\033[0m')    # 李⑥꽑 媛곷룄 (吏꾪뻾 諛⑺뼢)
+                
+                if lane_x is not None and lane_x >= 0:
+                    if self.lx_prev is not None:
+                        # 큰 점프는 한 프레임에 lx_jump 만큼만 따라가게 클램프
+                        delta = lane_x - self.lx_prev
+                        if abs(delta) > self.lx_jump:
+                            lane_x = int(self.lx_prev + (self.lx_jump if delta > 0 else -self.lx_jump))
+                        # EMA로 부드럽게
+                        lane_x = int(self.lx_alpha * lane_x + (1 - self.lx_alpha) * self.lx_prev)
+                    self.lx_prev = lane_x
+
+                
                 t = now()
+
+                if self.after_turn and self.after_turn_ts is not None:
+                    if (t - self.after_turn_ts) > self.after_turn_window:
+                        self.lane_detect.set_roi(self.rois_default)   # ROI 원복
+                        self.after_turn = False
+                        self.after_turn_ts = None
+
+
+                # (NEW) 빨간불 우선 처리
+                if self.handle_red_light():
+                    continue
+
                 if (self.park_state == 'idle') and (self.right_state == 'idle'):
                     if self.cw_state == 'idle':
                         self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
@@ -393,6 +469,12 @@ class SelfDrivingNode(Node):
                                 self.cw_state = 'cooldown'
                                 self.cw_ts = t
                                 self.crosswalk_detected = False
+
+                                self.after_turn = True
+                                self.after_turn_ts = t
+                                self.lane_detect.set_roi(self.rois_near)
+
+
                                 self.get_logger().info(
                                     f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
                                 )
@@ -528,6 +610,7 @@ class SelfDrivingNode(Node):
         self.traffic_signs_detected = False  # (다른 신호/표지 플래그도 여기서 리셋)
         self.right_seen = False
         self.park_seen = False
+        self.red_seen = False
         # 쿨다운 활성 여부(FSM 기준). 콜백에서는 cross_walk만 무시하고 나머지는 처리.
         ignore_crosswalk = (
             (self.cw_state == 'cooldown')
@@ -580,11 +663,29 @@ class SelfDrivingNode(Node):
                 height = y2 - y1
                 center_y = int((y1 + y2) / 2)
 
-                if score > 0.1 and y2 > frame_height * 0.5:
+                if score > 0.1 and y2 > frame_height * 0.1:
                     self.park_seen = True   # <-- 추가: 파킹 관측 라치용
                     self.get_logger().info(f'\033[1;35m[PARK]Score: {score} y2: {y2}\033[0m')
 
+            if obj.class_name == 'light_red':
+                score = obj.score
+                x1, y1, x2, y2 = obj.box
+                width = x2 - x1
+                height = y2 - y1
+                center_y = int((y1 + y2) / 2)
+
+                if score > 0.1 and y2 > frame_height * 0.1:
+                    self.red_seen = True
+                    self.last_red_seen_ts = now()   # ★ 마지막으로 빨간불 본 시각 기록
+                    self.get_logger().info(f'\033[1;35m[RED]Score: {score} y2: {y2}\033[0m')
+
+
+
         self.crosswalk_distance = cw_best_center_y if self.crosswalk_detected else 0
+
+        # 빨간불 히스테리시스
+        self.red_cnt = self.red_cnt + 1 if self.red_seen else max(0, self.red_cnt - 1)
+        
 
         # --- [ADD] 우회전 연속 감지 카운터(히스테리시스) ---
         # 관측되면 +1, 아니면 1씩 감소(0 하한)
