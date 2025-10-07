@@ -42,7 +42,7 @@ def launch_setup(context):
         output='screen',
         parameters=[{
             "device": "cpu",
-            "model": "best_model",  # => yolov5_ros2/config/best_model.onnx 사용
+            "model": "best_ver1_model",  # => yolov5_ros2/config/best_model.onnx 사용
             "image_topic": "/ascamera/camera_publisher/rgb0/image",
             # "show_result": True,
             "pub_result_img": True,
