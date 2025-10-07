@@ -136,7 +136,7 @@ class SelfDrivingNode(Node):
         self.crosswalk_cooldown_time = None  
         self.crosswalk_cooldown_duration = 5.0
 
-        # idle → stopping(3s 정지) → cooldown(10s 무시) → idle
+        # idle → stopping(3s 정지) → cooldown(5s 무시) → idle
         self.cw_state = 'idle'    # 'idle' | 'stopping' | 'cooldown'
         self.cw_ts = None         # 상태 전이 기준 시간 (monotonic)
         self.traffic_signs_detected = False  # 매 프레임 콜백에서 갱신
@@ -155,6 +155,38 @@ class SelfDrivingNode(Node):
         self.right_turn_angular = -0.60  # 우회전 각속도(좌핸들 기준 음수)
 
         self.set_rgb_color(255, 0, 0)  # 초기 상태 빨강 (대기/정지)
+
+        # --- PARK FSM (forward -> strafe -> done) ---
+        self.park_state = 'idle'        # 'idle' | 'forward' | 'strafe' | 'done'
+        self.park_ts = None
+        self.park_seen = False
+        self.park_cnt = 0
+        self.park_on_threshold = 2     # 연속 감지 임계(프레임 수)
+
+        self.park_latch = False
+
+        # 동작 시간/속도 (코스에 맞게 튜닝)
+        self.park_forward_time = 5.0    # 전진 시간(s)
+        self.park_forward_speed = 0.18
+        self.park_strafe_time = 3.0     # y축 이동 시간(s)
+        self.park_strafe_speed = 0.18
+
+        # y축 이동 방향: 보통 오른쪽 주차면 -1 (컨트롤러에 따라 반대일 수 있음)
+        self.park_y_sign = -1
+
+        # --- PARK BLINK ---
+        self.park_blink_period = 0.30   # 색 바뀌는 주기(초)
+        self.park_blink_palette = [
+            (255, 0, 0),    # R
+            (255, 255, 0),  # Y
+            (0, 255, 0),    # G
+            (0, 255, 255),  # C
+            (0, 0, 255),    # B
+            (255, 0, 255),  # M
+            (255, 255, 255) # W
+        ]
+
+
 
     def get_node_state(self, request, response):
         response.success = True
@@ -238,6 +270,21 @@ class SelfDrivingNode(Node):
 
         self.rgb_pub.publish(msg)
 
+    def blink_all_leds(self, t=None):
+        """모든 LED를 팔레트 색상으로 순차 점멸."""
+        if t is None:
+            t = now()
+        idx = int(t / self.park_blink_period) % len(self.park_blink_palette)
+        r, g, b = self.park_blink_palette[idx]
+
+        # (A) 양쪽 LED 동일 색상 점멸
+        #self.set_rgb_color(r, g, b)
+
+        # (B) 좌우 다른 색으로 번갈아 점멸하고 싶으면 아래 2줄로 교체:
+        idx2 = (idx + len(self.park_blink_palette)//2) % len(self.park_blink_palette)
+        self.set_rgb_dual(self.park_blink_palette[idx], self.park_blink_palette[idx2])
+
+
 
 
     def shutdown(self, signum, frame):
@@ -272,73 +319,142 @@ class SelfDrivingNode(Node):
                 # self.get_logger().info(f'\033[1;32mlane_x: {lane_x}\033[0m') # 寃�異쒕맂 李⑥꽑 以묒떖??x醫뚰몴
                 # self.get_logger().info(f'\033[1;32mlane_angle: {lane_angle}\033[0m')    # 李⑥꽑 媛곷룄 (吏꾪뻾 諛⑺뼢)
                 t = now()
-                if self.cw_state == 'idle':
-                    self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
-                    if self.crosswalk_detected:
-                        self.cw_state = 'stopping'
-                        self.cw_ts = t
-                        self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
-                        self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
-                elif self.cw_state == 'stopping':
-                    if t - self.cw_ts < 3.0:
-                        # 3초 정지
-                        twist = Twist()
-                        twist.linear.x = 0.0
-                        twist.angular.z = 0.0
-                        self.mecanum_pub.publish(twist)
-                        continue
-                    else:
-                        # 정지 완료 → 쿨다운 진입
-                        self.cw_state = 'cooldown'
-                        self.cw_ts = t
-                        self.set_rgb_color(0, 255, 0)  # 출발 (초록)
-                        # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
-                        self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
-                elif self.cw_state == 'cooldown':
-                    if t - self.cw_ts >= self.crosswalk_cooldown_duration:
-                        self.cw_state = 'idle'
-                        self.cw_ts = None
-                        self.set_rgb_color(0, 255, 0)  # 주행(초록)
-                        self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
-
-                if self.cw_state != 'stopping':
-                    if self.right_state == 'idle':
-                        # 콜백에서 연속 감지로 라치되면 forward 단계로 진입
-                        if self.right_cnt >= self.right_on_threshold:
-                            self.right_state = 'forward'
-                            self.right_ts = t
-                            self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
-                    elif self.right_state == 'forward':
-                        if t - self.right_ts < self.right_forward_time:
+                if (self.park_state == 'idle') and (self.right_state == 'idle'):
+                    if self.cw_state == 'idle':
+                        self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
+                        if self.crosswalk_detected:
+                            self.cw_state = 'stopping'
+                            self.cw_ts = t
+                            self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
+                            self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
+                    elif self.cw_state == 'stopping':
+                        if t - self.cw_ts < 3.0:
+                            # 3초 정지
                             twist = Twist()
-                            twist.linear.x = self.normal_speed
+                            twist.linear.x = 0.0
                             twist.angular.z = 0.0
                             self.mecanum_pub.publish(twist)
                             continue
                         else:
-                            self.right_state = 'turning'
-                            self.right_ts = t
-                            self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
-                    elif self.right_state == 'turning':
-                        if t - self.right_ts < self.right_turn_time:
-                            twist = Twist()
-                            twist.linear.x = self.slow_down_speed
-                            twist.angular.z = self.right_turn_angular
-                            self.mecanum_pub.publish(twist)
+                            # 정지 완료 → 쿨다운 진입
+                            self.cw_state = 'cooldown'
+                            self.cw_ts = t
+                            self.set_rgb_color(0, 255, 0)  # 출발 (초록)
+                            # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
+                            self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+                    elif self.cw_state == 'cooldown':
+                        if t - self.cw_ts >= self.crosswalk_cooldown_duration:
+                            self.cw_state = 'idle'
+                            self.cw_ts = None
+                            self.set_rgb_color(0, 255, 0)  # 주행(초록)
+                            self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
+                else:
+                    # 파킹 우회전 진행/완료 중엔 CW 감지 자체를 무시
+                    self.crosswalk_detected = False
 
-                            # 우회전 중 LED 깜빡이기 (0.3초 간격)
-                            if int((t * 2) % 2) == 0:  # 약 0.5초 단위 토글
-                                self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 왼쪽=초록, 오른쪽=노랑
+                if self.cw_state != 'stopping':
+                    if self.park_state == 'idle':
+                        if self.right_state == 'idle':
+                            # 콜백에서 연속 감지로 라치되면 forward 단계로 진입
+                            if self.right_cnt >= self.right_on_threshold:
+                                self.right_state = 'forward'
+                                self.right_ts = t
+                                self.crosswalk_detected = False
+                                self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
+                        elif self.right_state == 'forward':
+                            if t - self.right_ts < self.right_forward_time:
+                                twist = Twist()
+                                twist.linear.x = self.normal_speed
+                                twist.angular.z = 0.0
+                                self.mecanum_pub.publish(twist)
+                                continue
                             else:
-                                self.set_rgb_dual((0, 255, 0), (0, 0, 0))      # 오른쪽 OFF
+                                self.right_state = 'turning'
+                                self.right_ts = t
+                                self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
+                        elif self.right_state == 'turning':
+                            if t - self.right_ts < self.right_turn_time:
+                                twist = Twist()
+                                twist.linear.x = self.slow_down_speed
+                                twist.angular.z = self.right_turn_angular
+                                self.mecanum_pub.publish(twist)
+
+                                # 우회전 중 LED 깜빡이기 (0.3초 간격)
+                                if int((t * 2) % 2) == 0:  # 약 0.5초 단위 토글
+                                    self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 왼쪽=초록, 오른쪽=노랑
+                                else:
+                                    self.set_rgb_dual((0, 255, 0), (0, 0, 0))      # 오른쪽 OFF
+                                continue
+                            else:
+                                # 시퀀스 종료 및 리셋
+                                self.right_state = 'idle'
+                                self.right_ts = None
+                                self.right_cnt = 0
+                                self.cw_state = 'cooldown'
+                                self.cw_ts = t
+                                self.crosswalk_detected = False
+                                self.get_logger().info(
+                                    f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
+                                )
+                                self.set_rgb_color(0, 255, 0)  # 주행 (초록)
+                                self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
+
+                    # === PARK FSM 시작 ===
+                    if self.park_state == 'idle':
+                        if self.park_latch:
+                            self.park_state = 'forward'
+                            self.park_ts = t
+                            self._park_align_good = 0
+                            self.stuck_count = 0
+                            # 우회전 라치 초기화 (경합 방지)
+                            self.right_cnt = 0
+                            self.right_state = 'idle'
+                            self.park_cnt = 0
+                            self.park_latch = False # 라치 해제
+                            self.cw_state = 'idle'          # CW STOP 상태가 남아 파킹 FSM 막는 것 방지
+                            self.cw_ts = None
+                            self.crosswalk_detected = False
+                            self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
+                    
+
+                    elif self.park_state == 'forward':
+                        if t - self.park_ts < self.park_forward_time:
+                            twist = Twist()
+                            twist.linear.x = self.park_forward_speed
+                            twist.angular.z = 0.0
+                            self.mecanum_pub.publish(twist)
                             continue
                         else:
-                            # 시퀀스 종료 및 리셋
-                            self.right_state = 'idle'
-                            self.right_ts = None
-                            self.right_cnt = 0
-                            self.set_rgb_color(0, 255, 0)  # 주행 (초록)
-                            self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
+                            self.park_state = 'strafe'
+                            self.park_ts = t
+                            self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
+
+                    elif self.park_state == 'strafe':
+                        if t - self.park_ts < self.park_strafe_time:
+                            twist = Twist()
+                            twist.linear.x = 0.0
+                            twist.linear.y = self.park_y_sign * self.park_strafe_speed
+                            twist.angular.z = 0.0
+                            self.mecanum_pub.publish(twist)
+                            continue
+                        else:
+                            self.park_state = 'done'
+                            self.park_ts = None
+                            self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
+
+                    elif self.park_state == 'done':
+                        # 완전 정지 후 주행 비활성화
+                        twist = Twist()                  # 0,0,0
+                        self.mecanum_pub.publish(twist)
+                        self.start = False               # 차선 추종/우회전 FSM 모두 비활성화
+                        self.park_cnt = 0 # 라치에 의한 재 트리거 방지
+                        self.right_cnt = 0
+                        self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
+                        # 여기서 1회 점멸 호출(이 프레임)
+                        self.blink_all_leds(t)
+                        continue                         # 아래 P제어 등 스킵해서 정지 유지
+
+                    # === PARK FSM 끝 ===
 
                     
 
@@ -359,7 +475,7 @@ class SelfDrivingNode(Node):
                         if lane_x >= 0 and not self.stop:
                             # 보정값 (좌표 차이)
                             error = lane_x - 130  # lane_x가 130보다 크면 오른쪽 → 좌회전 필요
-                            k = 0.002             # 비례 상수 (튜닝 필요)
+                            k = 0.003             # 비례 상수 (튜닝 필요)
                             twist.linear.x = self.normal_speed
                             twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
 
@@ -388,6 +504,8 @@ class SelfDrivingNode(Node):
                         )
 
             else:
+                if self.park_state == 'done':
+                    self.blink_all_leds(now())
                 time.sleep(0.01)
 
             bgr_image = result_image
@@ -409,21 +527,26 @@ class SelfDrivingNode(Node):
         self.crosswalk_distance = 0
         self.traffic_signs_detected = False  # (다른 신호/표지 플래그도 여기서 리셋)
         self.right_seen = False
+        self.park_seen = False
         # 쿨다운 활성 여부(FSM 기준). 콜백에서는 cross_walk만 무시하고 나머지는 처리.
-        cooldown_active = (self.cw_state == 'cooldown')
+        ignore_crosswalk = (
+            (self.cw_state == 'cooldown')
+            or (self.park_state != 'idle')
+            or (self.right_state != 'idle')
+        )
 
         if not self.objects_info:
             self.traffic_signs_status = None
             return
 
         max_score = 0
-        best_center_y = 0
+        cw_best_center_y = 0
         frame_width = 640
         frame_height = 480
 
         for obj in self.objects_info:
             if obj.class_name == 'cross_walk':
-                if cooldown_active:
+                if ignore_crosswalk:
                     continue
                 score = obj.score
                 x1, y1, x2, y2 = obj.box
@@ -432,12 +555,12 @@ class SelfDrivingNode(Node):
                 aspect_ratio = width / (height + 1e-5)
                 center_y = int((y1 + y2) / 2)
 
-                if score > 0.7 and y2 > frame_height * 0.68 and aspect_ratio > 2.0:
+                if score > 0.5 and y2 > frame_height * 0.68 and aspect_ratio > 2.0:
                     if score > max_score:
                         max_score = score
                         self.crosswalk_detected = True
-                        best_center_y = center_y
-                        self.get_logger().info(f'\033[1;32mScore: {score} y2: {y2}\033[0m')
+                        cw_best_center_y = center_y
+                        self.get_logger().info(f'\033[1;32m[CW] Score: {score} y2: {y2}\033[0m')
 
             if obj.class_name == 'right':
                 score = obj.score
@@ -448,10 +571,20 @@ class SelfDrivingNode(Node):
 
                 if score > 0.1 and y2 > frame_height * 0.1:
                     self.right_seen = True
-                    best_center_y = center_y
-                    self.get_logger().info(f'\033[1;36mScore: {score} y2: {y2}\033[0m')
+                    self.get_logger().info(f'\033[1;36m[RIGHT]Score: {score} y2: {y2}\033[0m')
+            
+            if obj.class_name == 'parking':
+                score = obj.score
+                x1, y1, x2, y2 = obj.box
+                width = x2 - x1
+                height = y2 - y1
+                center_y = int((y1 + y2) / 2)
 
-        self.crosswalk_distance = best_center_y if self.crosswalk_detected else 0
+                if score > 0.1 and y2 > frame_height * 0.5:
+                    self.park_seen = True   # <-- 추가: 파킹 관측 라치용
+                    self.get_logger().info(f'\033[1;35m[PARK]Score: {score} y2: {y2}\033[0m')
+
+        self.crosswalk_distance = cw_best_center_y if self.crosswalk_detected else 0
 
         # --- [ADD] 우회전 연속 감지 카운터(히스테리시스) ---
         # 관측되면 +1, 아니면 1씩 감소(0 하한)
@@ -459,6 +592,22 @@ class SelfDrivingNode(Node):
             self.right_cnt += 1
         else:
             self.right_cnt = max(0, self.right_cnt - 1)
+
+        # --- [ADD] 파킹 연속 감지 카운터 ---
+        if self.park_seen:
+            self.park_cnt += 1
+        else:
+            self.park_cnt = max(0, self.park_cnt - 1)
+
+        # ★ 임계 통과 즉시 라치(정지 중이지만 않으면 OK)
+        if (not self.park_latch
+            and self.park_state == 'idle'
+            and self.right_state == 'idle'
+            and self.cw_state != 'stopping'
+            and self.park_cnt >= self.park_on_threshold):
+            self.park_latch = True
+
+
 
 def main():
     node = SelfDrivingNode('self_driving')

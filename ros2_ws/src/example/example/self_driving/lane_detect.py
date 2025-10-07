@@ -149,7 +149,7 @@ class LaneDetector(object):
         self.target_color = color
         # ROI for lane detection
         if os.environ['DEPTH_CAMERA_TYPE'] == 'ascamera':
-            self.rois = ((338, 360, 0, 160, 0.7), (292, 315, 0, 160, 0.2), (248, 270, 0, 160, 0.1))
+            self.rois = ((338, 360, 0, 160, 0.7), (292, 315, 30, 160, 0.2), (248, 270, 50, 160, 0.1))
         else:
             self.rois = ((450, 480, 0, 320, 0.7), (390, 480, 0, 320, 0.2), (330, 480, 0, 320, 0.1))
         self.weight_sum = 1.0
