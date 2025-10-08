@@ -39,6 +39,7 @@ class SelfDrivingNode(Node):
         )
 
         # [1] 기본 속성 초기화
+
         self.name = name
         self.is_running = True
         self.pid = pid.PID(0.4, 0.0, 0.05)
@@ -137,6 +138,11 @@ class SelfDrivingNode(Node):
         self.objects_info = []
         self.stuck_count = 0
         self.after_turn = False
+
+        ### --- 우회전 깜박이를 위한 변수 --- ###
+        self.blink_period = 0.5  # LED 깜빡임 주기(초)
+        self.last_blink_time = now()
+        self.blink_state = False
  
         # self.crosswalk_stop = False
         self.crosswalk_detected = False
@@ -158,7 +164,7 @@ class SelfDrivingNode(Node):
         # 튜닝 파라미터: 로그 4~6회(≈연속 프레임)면 라치
         self.right_on_threshold = 4      # 4 이상에서 라치
         # 동작 시간(초): 코스에 맞게 조정
-        self.right_forward_time = 1.30   # 전진 지속
+        self.right_forward_time = 2.00   # 전진 지속
         self.right_turn_time = 2.50      # 우회전 지속
         self.right_turn_angular = -0.60  # 우회전 각속도(좌핸들 기준 음수)
 
@@ -174,7 +180,7 @@ class SelfDrivingNode(Node):
         self.park_latch = False
 
         # 동작 시간/속도 (코스에 맞게 튜닝)
-        self.park_forward_time = 5.0    # 전진 시간(s)
+        self.park_forward_time = 5.8    # 전진 시간(s)
         self.park_forward_speed = 0.18
         self.park_strafe_time = 3.0     # y축 이동 시간(s)
         self.park_strafe_speed = 0.18
@@ -198,14 +204,45 @@ class SelfDrivingNode(Node):
         self.tl_state = 'idle'      # 'idle' | 'red'
         self.red_seen = False
         self.red_cnt = 0
-        self.tl_on_threshold = 3    # 빨간불 연속 감지 프레임 수 (튜닝)
+        self.tl_on_threshold = 4    # 빨간불 연속 감지 프레임 수 (튜닝)
         self.last_red_seen_ts = None
-        self.tl_release_gap = 0.6   # 해제: 빨간불이 안 보인 시간(초)
+        self.tl_release_gap = 2.0   # 해제: 빨간불이 안 보인 시간(초)
         self.cw_freeze_start = None
+
+        self.tl_min_stop = 1.0
+        self.tl_hold_until = None
+
+        # ✅ [ADD] Green 라치(연속 프레임) 설정
+        self.green_seen = False
+        self.green_cnt = 0
+        self.tl_green_on_threshold = 1   # 연속 2프레임 초록이면 출발 (필요시 3으로)
+
+        self.last_green_seen_ts = None
+        self.green_recent_window = 1.5  # 최근 1.0초 내 초록이면 출발 허용
 
         self.lx_prev = None
         self.lx_alpha = 0.6   # 0.0~1.0, 클수록 새 값 가중 ↑
         self.lx_jump = 40     # 한 프레임에서 허용할 최대 이동 픽셀
+
+        self.red_ignore_until = None
+        self.red_post_right_ignore = 1.0  # 우회전 완료 후 추가 무시 시간(초)
+
+        # ✅ STARTUP TL GATE
+        self.startup_gate_active = True          # 처음엔 신호 대기
+        self.start_green_on_threshold = 1        # 연속 2프레임 초록이면 출발 (필요시 3으로)
+
+        # --- add: prefer CW over TL for a short window ---
+        self.last_cw_seen_ts = None
+        self.cw_prefer_window = 1.7   # 최근 0.9s 동안은 TL 라치 보류
+
+        # ✅ 신호를 처음 보기 시작했을 때 잠깐 TL 라치 지연 (CW 우선)
+        self.first_light_seen_ts = None
+        self.defer_tl_until_cw_checked = 1.7  # 0.8~1.2s 정도 권장 (로그 gap이 ~0.7s이면 1.0 추천)
+
+
+
+
+
 
 
 
@@ -319,33 +356,65 @@ class SelfDrivingNode(Node):
 
     def handle_red_light(self):
         """빨간불이면 완전 정지, 빨간불이 사라지면 해제. True 리턴 시 이 프레임은 정지 처리."""
-        # 파킹/우회전 진행 중이면 신호 무시(기존 정책 유지)
-        if (self.park_state != 'idle') or (self.right_state != 'idle'):
+        # 회전(turning) 중이거나 red_ignore_until 그레이스 중일 때만 무시
+        if (self.park_state != 'idle') or (self.right_state == 'turning') or (self.red_ignore_until is not None and now() < self.red_ignore_until):
             return False
+        
+        # 그레이스가 끝났으면 깔끔히 해제
+        if self.red_ignore_until is not None and now() >= self.red_ignore_until:
+            self.red_ignore_until = None
+
 
         # 진입 조건: 빨간불 연속 감지
         if self.tl_state == 'idle':
+
+            # ▼ 추가: 신호를 막 보기 시작했고(CW 판단 전) 보류 창 내면 TL 라치 보류
+            if (self.first_light_seen_ts is not None
+                and (now() - self.first_light_seen_ts) < self.defer_tl_until_cw_checked
+                and self.cw_state == 'idle'):
+                return False
+
             if self.red_cnt >= self.tl_on_threshold:
                 self.tl_state = 'red'
-                self.cw_freeze_start = now()
+                self.first_light_seen_ts = None
+                self.cw_freeze_start = now() if (self.cw_state == 'cooldown') else None
+                self.tl_hold_until = now() + self.tl_min_stop
+                self.green_cnt = 0
                 self.set_rgb_color(255, 0, 0)
                 self.get_logger().info('\033[1;31m[TL] RED → STOP\033[0m')
 
         # 유지/해제
         if self.tl_state == 'red':
-            if self.last_red_seen_ts is not None and (now() - self.last_red_seen_ts) > self.tl_release_gap:
-                # 빨간불 정지 동안 CW 쿨다운 멈추기
+            # [ADD] 최소 정지시간 보장(해제 로직보다 먼저 체크)
+            if self.tl_hold_until is not None and now() < self.tl_hold_until:
+                self.mecanum_pub.publish(Twist())
+                self.set_rgb_color(255, 0, 0)
+                return True
+            
+            can_release = (self.green_cnt >= self.tl_green_on_threshold)
+
+            if can_release:
+                # 정지 동안 동결했던 CW 쿨다운 보정
                 if self.cw_freeze_start is not None and self.cw_state == 'cooldown' and self.cw_ts is not None:
-                    self.cw_ts += (now() - self.cw_freeze_start)
+                    # 빨간불 지속 구간과 '쿨다운 시작 시각'의 겹친 부분만 더한다
+                    freeze_end = now()
+                    overlap_start = max(self.cw_freeze_start, self.cw_ts)
+                    dt = freeze_end - overlap_start
+                    if dt > 0:
+                        self.cw_ts += dt
                 self.cw_freeze_start = None
+
                 self.tl_state = 'idle'
                 self.red_cnt = 0
+                self.tl_hold_until = None
                 self.set_rgb_color(0, 255, 0)
-                self.get_logger().info('\033[1;32m[TL] GO (red gone)\033[0m')
+                self.get_logger().info('\033[1;32m[TL] GO (green)\033[0m')
+                # 여기서 정지 퍼블리시는 하지 않음 → 다음 로직이 자연스럽게 출발
             else:
-                self.mecanum_pub.publish(Twist())  # 계속 정지
+                # 계속 정지
+                self.mecanum_pub.publish(Twist())
+                self.set_rgb_color(255, 0, 0)
                 return True
-
         return False
 
     def main(self):
@@ -384,16 +453,36 @@ class SelfDrivingNode(Node):
                 
                 t = now()
 
+                if self.startup_gate_active:
+                    if self.green_cnt >= self.start_green_on_threshold:
+                        self.startup_gate_active = False
+                        self.set_rgb_color(0, 255, 0)
+                        self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
+                        # 게이트 해제 후 아래 기존 주행 로직 진행
+                    else:
+                        # 아직 출발 불가: 정지 유지
+                        twist = Twist()
+                        self.mecanum_pub.publish(twist)
+                        # LED: 빨간불이 보이면 빨강, 아니면 노랑으로 '대기' 표시
+                        if self.red_cnt > 0:
+                            self.set_rgb_color(255, 0, 0)
+                            self.get_logger().info('\033[1;31m[STARTUP] Waiting: RED detected\033[0m')
+                        else:
+                            self.set_rgb_color(255, 255, 0)
+                            self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
+                        # 이 프레임은 더 진행하지 않음
+                        continue
+
+
                 if self.after_turn and self.after_turn_ts is not None:
                     if (t - self.after_turn_ts) > self.after_turn_window:
                         self.lane_detect.set_roi(self.rois_default)   # ROI 원복
                         self.after_turn = False
                         self.after_turn_ts = None
-
-
+                
                 # (NEW) 빨간불 우선 처리
-                if self.handle_red_light():
-                    continue
+                #if self.handle_red_light():
+                #    continue
 
                 if (self.park_state == 'idle') and (self.right_state == 'idle'):
                     if self.cw_state == 'idle':
@@ -402,51 +491,113 @@ class SelfDrivingNode(Node):
                             self.cw_state = 'stopping'
                             self.cw_ts = t
                             self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
+                            self.first_light_seen_ts = None
                             self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
+
                     elif self.cw_state == 'stopping':
+                        # 3초 정지 중에도 신호등 라치 진행(리턴값은 무시)
+                        _ = self.handle_red_light()
+
                         if t - self.cw_ts < 3.0:
                             # 3초 정지
                             twist = Twist()
-                            twist.linear.x = 0.0
-                            twist.angular.z = 0.0
                             self.mecanum_pub.publish(twist)
+                            self.set_rgb_color(255, 0, 0)
                             continue
                         else:
-                            # 정지 완료 → 쿨다운 진입
-                            self.cw_state = 'cooldown'
-                            self.cw_ts = t
-                            self.set_rgb_color(0, 255, 0)  # 출발 (초록)
-                            # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
-                            self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+                            seen_light_recent = (
+                                (self.last_red_seen_ts   is not None and (t - self.last_red_seen_ts)   < 2.0) or
+                                (self.last_green_seen_ts is not None and (t - self.last_green_seen_ts) < 2.0)
+                            )
+                            green_recent = (self.last_green_seen_ts is not None and
+                                            (t - self.last_green_seen_ts) < self.green_recent_window)
+
+
+                            if seen_light_recent:
+                                # 신호 있는 교차로: 빨간만 아니고, 최근에 초록을 봤으면 출발
+                                can_go = (self.tl_state != 'red') and green_recent
+                            else:
+                                # 신호 없는 횡단보도: 3초 끝나면 출발 허용
+                                can_go = True
+
+                            if not can_go:
+                                # 빨간불 보이거나(=tl_state=='red') 아직 초록 신뢰 미달이면 계속 정지 유지
+                                twist = Twist()
+                                self.mecanum_pub.publish(twist)
+                                self.set_rgb_color(255, 0, 0)
+                                # stopping 타이머가 흘러 과하게 누적되지 않게, 기준시각 살짝 재설정(선택)
+                                self.cw_ts = t - 3.0
+                                continue
+                            else :
+                                # 정지 완료 → 쿨다운 진입
+                                self.cw_state = 'cooldown'
+                                self.cw_ts = t
+                                self.set_rgb_color(0, 255, 0)  # 출발 (초록)
+                                # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
+                                self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+
                     elif self.cw_state == 'cooldown':
                         if t - self.cw_ts >= self.crosswalk_cooldown_duration:
                             self.cw_state = 'idle'
                             self.cw_ts = None
                             self.set_rgb_color(0, 255, 0)  # 주행(초록)
                             self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
+                            self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.8)
+                            # 이 프레임 즉시 정지 퍼블리시(튐 방지)
+                            self.mecanum_pub.publish(Twist())
+                            # 같은 프레임에서 즉시 신호등 평가(빨간불이면 계속 정지)
+                            if self.handle_red_light():
+                                continue
+
+
                 else:
                     # 파킹 우회전 진행/완료 중엔 CW 감지 자체를 무시
                     self.crosswalk_detected = False
 
                 if self.cw_state != 'stopping':
+                    # 최근에 횡단보도를 봤다면 (cw_prefer_window 안) TL 라치 보류 → CW STOPPING 로그가 먼저 찍히도록
+                    if not self.last_cw_seen_ts or (t - self.last_cw_seen_ts) > self.cw_prefer_window:
+                        if self.handle_red_light():
+                            continue
+
+                #if (self.cw_state not in 'stopping') and not (self.crosswalk_detected) and (self.handle_red_light()):
+                #    continue
+
+
+                if self.cw_state != 'stopping':
                     if self.park_state == 'idle':
                         if self.right_state == 'idle':
                             # 콜백에서 연속 감지로 라치되면 forward 단계로 진입
-                            if self.right_cnt >= self.right_on_threshold:
+                            if (self.right_cnt >= self.right_on_threshold) and (self.tl_state != 'red'):
                                 self.right_state = 'forward'
                                 self.right_ts = t
                                 self.crosswalk_detected = False
+                                # 우회전 라치 직후(전진 단계 시작) 빨간불 히스토리/라치 리셋 + 그레이스 시작
                                 self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
                         elif self.right_state == 'forward':
                             if t - self.right_ts < self.right_forward_time:
                                 twist = Twist()
-                                twist.linear.x = self.normal_speed
-                                twist.angular.z = 0.0
-                                self.mecanum_pub.publish(twist)
+                                if lane_x >= 0 and not self.stop:
+                                    # 보정값 (좌표 차이)
+                                    error = lane_x - 120  # lane_x가 120보다 크면 오른쪽 → 좌회전 필요
+                                    k = 0.003             # 비례 상수 (튜닝 필요)
+                                    twist.linear.x = self.normal_speed
+                                    twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
+                                    self.mecanum_pub.publish(twist)
+
+                                else:
+                                    self.pid.clear()
+                                    self.stuck_count += 1
+                                    if self.stuck_count > 5:
+                                        twist.linear.x = self.slow_down_speed
+                                        twist.angular.z = -0.6
+                                        self.after_turn = True
+                                    self.mecanum_pub.publish(twist)
                                 continue
                             else:
                                 self.right_state = 'turning'
                                 self.right_ts = t
+                                self.red_ignore_until = now() + self.right_turn_time + 0.2
                                 self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
                         elif self.right_state == 'turning':
                             if t - self.right_ts < self.right_turn_time:
@@ -473,7 +624,10 @@ class SelfDrivingNode(Node):
                                 self.after_turn = True
                                 self.after_turn_ts = t
                                 self.lane_detect.set_roi(self.rois_near)
-
+                                self.red_ignore_until = now() + self.red_post_right_ignore
+                                # [ADD] LED 블링크 확실히 종료
+                                self.blink_state = False
+                                self.last_blink_time = now()      # (선택) 주기 기준 재설정
 
                                 self.get_logger().info(
                                     f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
@@ -538,6 +692,7 @@ class SelfDrivingNode(Node):
 
                     # === PARK FSM 끝 ===
 
+
                     
 
                 if lane_x >= 0 and not self.stop:
@@ -556,10 +711,16 @@ class SelfDrivingNode(Node):
                         self.count_turn = 0
                         if lane_x >= 0 and not self.stop:
                             # 보정값 (좌표 차이)
-                            error = lane_x - 130  # lane_x가 130보다 크면 오른쪽 → 좌회전 필요
+                            error = lane_x - 120  # lane_x가 130보다 크면 오른쪽 → 좌회전 필요
                             k = 0.003             # 비례 상수 (튜닝 필요)
                             twist.linear.x = self.normal_speed
                             twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
+                            
+                            # LED: 초록색 (단, 빨간불·횡단보도·주차·우회전 중엔 덮어쓰지 않음) 쿨다운 중에도 초록 유지 (빨간불/파킹/우회전 중만 제외)
+                            if (self.tl_state != 'red'
+                                and self.park_state == 'idle'
+                                and self.right_state == 'idle'):
+                                self.set_rgb_color(0, 255, 0)
 
                             self.mecanum_pub.publish(twist)
                 else:
@@ -569,6 +730,30 @@ class SelfDrivingNode(Node):
                         twist.linear.x = self.slow_down_speed
                         twist.angular.z = -0.6
                         self.after_turn = True
+
+                        # 8프레임 이상이면 '실제 회전'으로 간주
+                        if self.stuck_count >= 8:
+                        #    self.get_logger().info(f'\033[1;33m[LANE LOST] turning to recover lane (frame={self.stuck_count})\033[0m')
+
+                            # 깜빡이 시작
+                            if t - self.last_blink_time > self.blink_period:
+                                self.blink_state = not self.blink_state
+                                self.last_blink_time = t
+
+                            if self.blink_state:
+                                self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 오른쪽 노란색 켜기
+                            else:
+                                self.set_rgb_dual((0, 255, 0), (0, 0, 0)) 
+
+                        # 회전 중엔 리셋 타이머 초기화
+                        self.blink_reset_ts = t
+                    else:
+                        # 차선 복귀 시 LED 초기화
+                        if lane_x >= 0 and self.blink_state:
+                            self.blink_state = False
+                            self.set_rgb_color(0, 255, 0)
+                        elif lane_x >= 0 and not self.blink_state:
+                            self.set_rgb_color(0, 255, 0)
                     self.mecanum_pub.publish(twist)
 
                 if not self.get_parameter('only_line_follow').value and self.objects_info:
@@ -611,6 +796,7 @@ class SelfDrivingNode(Node):
         self.right_seen = False
         self.park_seen = False
         self.red_seen = False
+        self.green_seen = False 
         # 쿨다운 활성 여부(FSM 기준). 콜백에서는 cross_walk만 무시하고 나머지는 처리.
         ignore_crosswalk = (
             (self.cw_state == 'cooldown')
@@ -637,12 +823,20 @@ class SelfDrivingNode(Node):
                 height = y2 - y1
                 aspect_ratio = width / (height + 1e-5)
                 center_y = int((y1 + y2) / 2)
+                # self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.6)
 
                 if score > 0.5 and y2 > frame_height * 0.68 and aspect_ratio > 2.0:
                     if score > max_score:
                         max_score = score
                         self.crosswalk_detected = True
                         cw_best_center_y = center_y
+                        self.last_cw_seen_ts = now()  # 최근에 횡단보도 봤다 표시
+
+                        # ▼ 추가: CW가 보였으면 TL 라치 잠깐 보류 + "처음 신호 본 시각" 초기화
+                        self.first_light_seen_ts = None
+                        self.red_ignore_until = max(self.red_ignore_until or 0.0,
+                                                    now() + self.defer_tl_until_cw_checked)
+                    
                         self.get_logger().info(f'\033[1;32m[CW] Score: {score} y2: {y2}\033[0m')
 
             if obj.class_name == 'right':
@@ -675,16 +869,37 @@ class SelfDrivingNode(Node):
                 center_y = int((y1 + y2) / 2)
 
                 if score > 0.1 and y2 > frame_height * 0.1:
-                    self.red_seen = True
-                    self.last_red_seen_ts = now()   # ★ 마지막으로 빨간불 본 시각 기록
-                    self.get_logger().info(f'\033[1;35m[RED]Score: {score} y2: {y2}\033[0m')
+                    if (self.right_state == 'turning') or (self.park_state != 'idle') or (self.cw_state == 'cooldown') or (self.red_ignore_until is not None and now() < self.red_ignore_until):
+                        pass  # 필요하면 플래그만 남겨도 됨
+                    else:
+                        self.red_seen = True
+                        self.last_red_seen_ts = now()    # ★ 마지막으로 빨간불 본 시각 기록
 
+                        # ▼ 추가: 신호를 "처음 보기 시작"한 시각 (CW 판단할 여유를 주기 위해)
+                        if self.first_light_seen_ts is None and self.cw_state == 'idle':
+                            self.first_light_seen_ts = now()
+                        self.get_logger().info(f'\033[1;35m[RED]Score: {score} y2: {y2}\033[0m')
+            
+            if obj.class_name == 'light_green':
+                score = obj.score
+                x1, y1, x2, y2 = obj.box
+                if score > 0.1 and y2 > frame_height * 0.1:
+                    self.green_seen = True
+                    self.last_green_seen_ts = now()   # 추가
 
+                    # ▼ 추가: 신호를 "처음 보기 시작"한 시각 (CW 판단할 여유를 주기 위해)
+                    if self.first_light_seen_ts is None and self.cw_state == 'idle':
+                        self.first_light_seen_ts = now()
+                    self.get_logger().info(f'\033[1;32m[GREEN]Score: {score} y2: {y2}\033[0m')
 
         self.crosswalk_distance = cw_best_center_y if self.crosswalk_detected else 0
 
         # 빨간불 히스테리시스
         self.red_cnt = self.red_cnt + 1 if self.red_seen else max(0, self.red_cnt - 1)
+
+        # 초록불 히스테리시스
+        self.green_cnt = self.green_cnt + 1 if self.green_seen else max(0, self.green_cnt - 1)
+
         
 
         # --- [ADD] 우회전 연속 감지 카운터(히스테리시스) ---
