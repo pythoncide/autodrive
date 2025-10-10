@@ -175,7 +175,7 @@ class SelfDrivingNode(Node):
         self.park_ts = None
         self.park_seen = False
         self.park_cnt = 0
-        self.park_on_threshold = 2     # 연속 감지 임계(프레임 수)
+        self.park_on_threshold = 3     # 연속 감지 임계(프레임 수)
 
         self.park_latch = False
 
@@ -204,7 +204,7 @@ class SelfDrivingNode(Node):
         self.tl_state = 'idle'      # 'idle' | 'red'
         self.red_seen = False
         self.red_cnt = 0
-        self.tl_on_threshold = 4    # 빨간불 연속 감지 프레임 수 (튜닝)
+        self.tl_on_threshold = 5    # 빨간불 연속 감지 프레임 수 (튜닝)
         self.last_red_seen_ts = None
         self.tl_release_gap = 2.0   # 해제: 빨간불이 안 보인 시간(초)
         self.cw_freeze_start = None
@@ -212,13 +212,13 @@ class SelfDrivingNode(Node):
         self.tl_min_stop = 1.0
         self.tl_hold_until = None
 
-        # ✅ [ADD] Green 라치(연속 프레임) 설정
+        # [ADD] Green 라치(연속 프레임) 설정
         self.green_seen = False
         self.green_cnt = 0
         self.tl_green_on_threshold = 1   # 연속 2프레임 초록이면 출발 (필요시 3으로)
 
         self.last_green_seen_ts = None
-        self.green_recent_window = 1.5  # 최근 1.0초 내 초록이면 출발 허용
+        self.green_recent_window = 2.5  # 최근 1.0초 내 초록이면 출발 허용
 
         self.lx_prev = None
         self.lx_alpha = 0.6   # 0.0~1.0, 클수록 새 값 가중 ↑
@@ -227,24 +227,17 @@ class SelfDrivingNode(Node):
         self.red_ignore_until = None
         self.red_post_right_ignore = 1.0  # 우회전 완료 후 추가 무시 시간(초)
 
-        # ✅ STARTUP TL GATE
+        # STARTUP TL GATE
         self.startup_gate_active = True          # 처음엔 신호 대기
         self.start_green_on_threshold = 1        # 연속 2프레임 초록이면 출발 (필요시 3으로)
 
         # --- add: prefer CW over TL for a short window ---
         self.last_cw_seen_ts = None
-        self.cw_prefer_window = 1.7   # 최근 0.9s 동안은 TL 라치 보류
+        self.cw_prefer_window = 1.0   # 최근 0.9s 동안은 TL 라치 보류
 
-        # ✅ 신호를 처음 보기 시작했을 때 잠깐 TL 라치 지연 (CW 우선)
+        # 신호를 처음 보기 시작했을 때 잠깐 TL 라치 지연 (CW 우선)
         self.first_light_seen_ts = None
-        self.defer_tl_until_cw_checked = 1.7  # 0.8~1.2s 정도 권장 (로그 gap이 ~0.7s이면 1.0 추천)
-
-
-
-
-
-
-
+        self.defer_tl_until_cw_checked = 1.0  # 0.8~1.2s 정도 권장 (로그 gap이 ~0.7s이면 1.0 추천)
 
     def get_node_state(self, request, response):
         response.success = True
@@ -357,7 +350,10 @@ class SelfDrivingNode(Node):
     def handle_red_light(self):
         """빨간불이면 완전 정지, 빨간불이 사라지면 해제. True 리턴 시 이 프레임은 정지 처리."""
         # 회전(turning) 중이거나 red_ignore_until 그레이스 중일 때만 무시
-        if (self.park_state != 'idle') or (self.right_state == 'turning') or (self.red_ignore_until is not None and now() < self.red_ignore_until):
+        if (self.park_state != 'idle') or (self.right_state == 'turning'):
+            return False
+        
+        if (self.red_ignore_until is not None and now() < self.red_ignore_until) and (self.cw_state != 'stopping'):
             return False
         
         # 그레이스가 끝났으면 깔끔히 해제
@@ -834,8 +830,8 @@ class SelfDrivingNode(Node):
 
                         # ▼ 추가: CW가 보였으면 TL 라치 잠깐 보류 + "처음 신호 본 시각" 초기화
                         self.first_light_seen_ts = None
-                        self.red_ignore_until = max(self.red_ignore_until or 0.0,
-                                                    now() + self.defer_tl_until_cw_checked)
+                        if self.cw_state == 'idle':
+                            self.red_ignore_until = now() + self.defer_tl_until_cw_checked
                     
                         self.get_logger().info(f'\033[1;32m[CW] Score: {score} y2: {y2}\033[0m')
 
