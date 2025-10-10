@@ -59,6 +59,15 @@ def launch_setup(context):
         parameters=[{'start': start}, {'only_line_follow': only_line_follow}],
     )
 
+    # LED 제어 노드 추가
+    led_controller_node = Node(
+        package='peripherals',
+        executable='led_controller',
+        name='led_controller',
+        parameters=[{'led_pin': 18}],
+        output='screen',
+    )
+
     return [start_arg,
             only_line_follow_arg,
             depth_camera_launch,
@@ -66,6 +75,7 @@ def launch_setup(context):
             #web_video_server_node,
             yolov5_node, 
             self_driving_node,
+            led_controller_node,   # 추가
             ]
 
 def generate_launch_description():

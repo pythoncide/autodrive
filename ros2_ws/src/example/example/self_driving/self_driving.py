@@ -27,6 +27,7 @@ from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState
+from std_msgs.msg import Bool
 
 
 class SelfDrivingNode(Node):
@@ -67,6 +68,7 @@ class SelfDrivingNode(Node):
         self.servo_state_pub = self.create_publisher(SetPWMServoState, 'ros_robot_controller/pwm_servo/set_state', 1)
         self.result_publisher = self.create_publisher(Image, '~/image_result', 1)
         self.rgb_pub = self.create_publisher(RGBStates, '/ros_robot_controller/set_rgb', 1)
+        self.led_pub = self.create_publisher(Bool, '/led_cmd', 10)  # 브레드보드 LED 제어 퍼블리셔
 
         # [3] 서비스 생성
         self.create_service(Trigger, '~/enter', self.enter_srv_callback)
@@ -377,6 +379,7 @@ class SelfDrivingNode(Node):
                 self.tl_hold_until = now() + self.tl_min_stop
                 self.green_cnt = 0
                 self.set_rgb_color(255, 0, 0)
+                self.led_pub.publish(Bool(data=True))  # 빨간불 정지 시 LED ON
                 self.get_logger().info('\033[1;31m[TL] RED → STOP\033[0m')
 
         # 유지/해제
@@ -404,6 +407,7 @@ class SelfDrivingNode(Node):
                 self.red_cnt = 0
                 self.tl_hold_until = None
                 self.set_rgb_color(0, 255, 0)
+                self.led_pub.publish(Bool(data=False))  # 초록불 출발 시 LED OFF
                 self.get_logger().info('\033[1;32m[TL] GO (green)\033[0m')
                 # 여기서 정지 퍼블리시는 하지 않음 → 다음 로직이 자연스럽게 출발
             else:
@@ -487,6 +491,7 @@ class SelfDrivingNode(Node):
                             self.cw_state = 'stopping'
                             self.cw_ts = t
                             self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
+                            self.led_pub.publish(Bool(data=True))  # 횡단보도 정지 시 LED ON
                             self.first_light_seen_ts = None
                             self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
 
@@ -529,6 +534,7 @@ class SelfDrivingNode(Node):
                                 self.cw_state = 'cooldown'
                                 self.cw_ts = t
                                 self.set_rgb_color(0, 255, 0)  # 출발 (초록)
+                                self.led_pub.publish(Bool(data=False))  # 횡단보도 출발 시 LED OFF
                                 # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
                                 self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
 
