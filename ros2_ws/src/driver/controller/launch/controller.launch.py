@@ -53,11 +53,12 @@ def launch_setup(context):
             'odom_frame': odom_frame
         }.items()
     )
-
+    """
     imu_filter_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(peripherals_package_path, 'launch/imu_filter.launch.py')
         ])
     )
+    """
 
     # IMU + Odom 데이터를 EKF로 융합해서 최종 odometry(odom)를 퍼블리시
     if use_namespace == 'false':
@@ -91,7 +92,7 @@ def launch_setup(context):
         map_frame_arg,
         imu_frame_arg,
         frame_prefix_arg,
-        imu_filter_launch,
+        #imu_filter_launch,
         odom_publisher_launch,
         #ekf_filter_node,
     ]
