@@ -44,22 +44,6 @@ def generate_launch_description():
                     os.path.join(peripherals_package_path, 'launch/usb_cam.launch.py'))
                 ),
 
-            Node(
-                package='tf2_ros',
-                executable='static_transform_publisher',
-                name="depth_cam_base_link",
-                arguments=[
-                    '--x', '0',
-                    '--y', '0',
-                    '--z', '0',
-                    '--qx', '-1.5707963267948966',
-                    '--qy', '0',
-                    '--qz', '-1.5707963267948966',
-                    '--qw', '0',
-                    '--frame-id', 'ascamera_camera_link_0',
-                    '--child-frame-id', 'depth_cam_color_frame'
-                ]
-            ),
         ])
 
     return LaunchDescription([

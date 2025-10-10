@@ -26,20 +26,4 @@ def generate_launch_description():
             ]
 
         ),
-            Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        #arguments = ['0', '0', '0', '-1.57', '0', '-1.57', 'depth_cam', 'ascamera_camera_link_0']
-        arguments = ['0', '0', '0', '-1.57', '0', '-1.57', 'depth_cam', 'ascamera_camera_link_0']
-        ),
-        
-        Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        #arguments = ['0', '0', '0', '-1.57', '0', '-1.57', 'depth_cam', 'ascamera_camera_link_0']
-        arguments = ['0', '0', '0', '-1.57', '0', '-1.57', 'depth_cam', 'ascamera_color_0']
-        ),
-        
-      
       ])
-
