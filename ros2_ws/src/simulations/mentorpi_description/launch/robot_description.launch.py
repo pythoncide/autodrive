@@ -34,6 +34,7 @@ def generate_launch_description():
     robot_description = Command(['xacro ', urdf_path])
     
     # 动态TF转换(dynamic TF conversion)
+    """
     joint_state_publisher_node = Node(
         package='joint_state_publisher',
         executable='joint_state_publisher',
@@ -71,6 +72,7 @@ def generate_launch_description():
                               'namespace': namespace,
                               'use_namespace': use_namespace,
                               'rviz_config': rviz_config_file}.items())
+    """
 
     return LaunchDescription([
         use_gui_arg,
@@ -79,10 +81,10 @@ def generate_launch_description():
         use_sim_time_arg,
         namespace_arg,
         use_namespace_arg,
-        joint_state_publisher_node,
-        robot_state_publisher_node,
-        joint_state_publisher_gui_node,
-        rviz_launch,
+        #joint_state_publisher_node,
+        #robot_state_publisher_node,
+        #joint_state_publisher_gui_node,
+        #rviz_launch,
     ])
 
 if __name__ == '__main__':
