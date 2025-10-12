@@ -9,7 +9,7 @@ def generate_launch_description():
             name='lcd_controller',
             output='screen',
             parameters=[{
-                'rs': 26, 'e': 19, 'd4': 13, 'd5': 6, 'd6': 5, 'd7': 11,
+                'rs': 21, 'e': 20, 'd4': 16, 'd5': 12, 'd6': 25, 'd7': 23,
                 'width': 16,
                 'topic': 'ui/lcd',
                 'gpiochip': 0,  # /dev/gpiochip0
