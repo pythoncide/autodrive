@@ -77,12 +77,12 @@ class LCDController(Node):
         super().__init__('lcd_controller')
 
         # 핀 파라미터(BCM 번호). 필요하면 launch에서 바꿔줘.
-        self.declare_parameter('rs', 26)
-        self.declare_parameter('e', 19)
-        self.declare_parameter('d4', 13)
-        self.declare_parameter('d5', 6)
-        self.declare_parameter('d6', 5)
-        self.declare_parameter('d7', 11)
+        self.declare_parameter('rs', 21)
+        self.declare_parameter('e', 20)
+        self.declare_parameter('d4', 16)
+        self.declare_parameter('d5', 12)
+        self.declare_parameter('d6', 25)
+        self.declare_parameter('d7', 23)
         self.declare_parameter('width', 16)
         self.declare_parameter('topic', 'ui/lcd')
         self.declare_parameter('gpiochip', 0)
