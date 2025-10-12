@@ -30,8 +30,8 @@ class LEDController(Node):
     def listener_callback(self, msg: Bool):
         """LED ON/OFF 제어"""
         lgpio.gpio_write(self.chip, self.led_pin, 1 if msg.data else 0)
-        state = "ON" if msg.data else "OFF"
-        self.get_logger().info(f"💡 LED {state} (GPIO {self.led_pin})")
+        #state = "ON" if msg.data else "OFF"
+        #self.get_logger().info(f"💡 LED {state} (GPIO {self.led_pin})")
 
     def destroy_node(self):
         """종료 시 자원 해제"""
