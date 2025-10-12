@@ -27,7 +27,7 @@ from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 class SelfDrivingNode(Node):
@@ -69,6 +69,8 @@ class SelfDrivingNode(Node):
         self.result_publisher = self.create_publisher(Image, '~/image_result', 1)
         self.rgb_pub = self.create_publisher(RGBStates, '/ros_robot_controller/set_rgb', 1)
         self.led_pub = self.create_publisher(Bool, '/led_cmd', 10)  # 브레드보드 LED 제어 퍼블리셔
+        self.lcd_pub = self.create_publisher(String, 'ui/lcd', 10) # 브레드보드 LCD 제어 퍼블리셔
+        self._lcd_last, self._lcd_ts = "", 0.0 # LCD 스로틀 헬퍼
 
         # [3] 서비스 생성
         self.create_service(Trigger, '~/enter', self.enter_srv_callback)
@@ -322,6 +324,14 @@ class SelfDrivingNode(Node):
         msg.states.append(led2)
 
         self.rgb_pub.publish(msg)
+    
+    def lcd(self, line1: str, line2: str = ""):
+        """16x2 LCD용. 같은 내용은 너무 자주 안 보내도록 5Hz(0.2s) 스로틀."""
+        msg = f"{line1}\n{line2}".strip()
+        ts = now()
+        if msg != self._lcd_last or (ts - self._lcd_ts) > 0.2:
+            self.lcd_pub.publish(String(data=msg[:128]))  # 과도한 길이 방지
+            self._lcd_last, self._lcd_ts = msg, ts
 
     def blink_all_leds(self, t=None):
         """모든 LED를 팔레트 색상으로 순차 점멸."""
@@ -458,6 +468,7 @@ class SelfDrivingNode(Node):
                         self.startup_gate_active = False
                         self.set_rgb_color(0, 255, 0)
                         self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
+                        self.lcd("GREEN detacted", "GO")
                         # 게이트 해제 후 아래 기존 주행 로직 진행
                     else:
                         # 아직 출발 불가: 정지 유지
@@ -470,6 +481,7 @@ class SelfDrivingNode(Node):
                         else:
                             self.set_rgb_color(255, 255, 0)
                             self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
+                            self.lcd("No detacted...", "Wait...") # LCD 대기 표시 출력
                         # 이 프레임은 더 진행하지 않음
                         continue
 
@@ -494,6 +506,7 @@ class SelfDrivingNode(Node):
                             self.led_pub.publish(Bool(data=True))  # 횡단보도 정지 시 LED ON
                             self.first_light_seen_ts = None
                             self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
+                            self.lcd("CW detected", "Wait 3 seconds...")
 
                     elif self.cw_state == 'stopping':
                         # 3초 정지 중에도 신호등 라치 진행(리턴값은 무시)
@@ -537,6 +550,7 @@ class SelfDrivingNode(Node):
                                 self.led_pub.publish(Bool(data=False))  # 횡단보도 출발 시 LED OFF
                                 # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
                                 self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+                                self.lcd("[CW] CW pass", "Ignore 5 seconds")
 
                     elif self.cw_state == 'cooldown':
                         if t - self.cw_ts >= self.crosswalk_cooldown_duration:
@@ -576,6 +590,7 @@ class SelfDrivingNode(Node):
                                 self.crosswalk_detected = False
                                 # 우회전 라치 직후(전진 단계 시작) 빨간불 히스토리/라치 리셋 + 그레이스 시작
                                 self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
+                                self.lcd("RIGHT detected", "Forward")
                         elif self.right_state == 'forward':
                             if t - self.right_ts < self.right_forward_time:
                                 twist = Twist()
@@ -601,6 +616,7 @@ class SelfDrivingNode(Node):
                                 self.right_ts = t
                                 self.red_ignore_until = now() + self.right_turn_time + 0.2
                                 self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
+                                self.lcd("RIGHT start", "Turning...")
                         elif self.right_state == 'turning':
                             if t - self.right_ts < self.right_turn_time:
                                 twist = Twist()
@@ -636,6 +652,7 @@ class SelfDrivingNode(Node):
                                 )
                                 self.set_rgb_color(0, 255, 0)  # 주행 (초록)
                                 self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
+                                self.lcd("RIGHT completed", "Lanedetect start")
 
                     # === PARK FSM 시작 ===
                     if self.park_state == 'idle':
@@ -653,8 +670,8 @@ class SelfDrivingNode(Node):
                             self.cw_ts = None
                             self.crosswalk_detected = False
                             self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
+                            self.lcd("PARK detected", "Forward")
                     
-
                     elif self.park_state == 'forward':
                         if t - self.park_ts < self.park_forward_time:
                             twist = Twist()
@@ -666,6 +683,7 @@ class SelfDrivingNode(Node):
                             self.park_state = 'strafe'
                             self.park_ts = t
                             self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
+                            self.lcd("PARK start", "Parking...")
 
                     elif self.park_state == 'strafe':
                         if t - self.park_ts < self.park_strafe_time:
@@ -679,6 +697,7 @@ class SelfDrivingNode(Node):
                             self.park_state = 'done'
                             self.park_ts = None
                             self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
+                            self.lcd("PARK complete!", "Good Bye!")
 
                     elif self.park_state == 'done':
                         # 완전 정지 후 주행 비활성화
@@ -693,9 +712,6 @@ class SelfDrivingNode(Node):
                         continue                         # 아래 P제어 등 스킵해서 정지 유지
 
                     # === PARK FSM 끝 ===
-
-
-                    
 
                 if lane_x >= 0 and not self.stop:
                     # self.get_logger().info(f'\033[1;32mStart Tracking\033[0m')
@@ -902,8 +918,6 @@ class SelfDrivingNode(Node):
         # 초록불 히스테리시스
         self.green_cnt = self.green_cnt + 1 if self.green_seen else max(0, self.green_cnt - 1)
 
-        
-
         # --- [ADD] 우회전 연속 감지 카운터(히스테리시스) ---
         # 관측되면 +1, 아니면 1씩 감소(0 하한)
         if self.right_seen:
@@ -924,8 +938,6 @@ class SelfDrivingNode(Node):
             and self.cw_state != 'stopping'
             and self.park_cnt >= self.park_on_threshold):
             self.park_latch = True
-
-
 
 def main():
     node = SelfDrivingNode('self_driving')
