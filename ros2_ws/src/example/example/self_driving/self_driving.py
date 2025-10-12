@@ -144,6 +144,8 @@ class SelfDrivingNode(Node):
         self.stuck_count = 0
         self.after_turn = False
 
+        self.park_led_thread = None
+
         ### --- 우회전 깜박이를 위한 변수 --- ###
         self.blink_period = 0.5  # LED 깜빡임 주기(초)
         self.last_blink_time = now()
@@ -719,15 +721,31 @@ class SelfDrivingNode(Node):
 
                         elif self.park_state == 'done':
                             # 완전 정지 후 주행 비활성화
-                            twist = Twist()                  # 0,0,0
+                            twist = Twist()
                             self.mecanum_pub.publish(twist)
                             self.start = False               # 차선 추종/우회전 FSM 모두 비활성화
                             self.park_cnt = 0 # 라치에 의한 재 트리거 방지
                             self.right_cnt = 0
                             self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
-                            # 여기서 1회 점멸 호출(이 프레임)
-                            self.blink_all_leds(t)
-                            continue                         # 아래 P제어 등 스킵해서 정지 유지
+
+                            # RGB LED 순환 점멸
+                            self.blink_all_leds(t)  # 아래 P제어 등 스킵해서 정지 유지
+
+                            # --- [ADD] 브레드보드 LED 0.3초 깜빡임 스레드 시작 ---
+                            if self.park_led_thread is None or not self.park_led_thread.is_alive():
+                                def led_blink_loop():
+                                    led_on = False
+                                    while self.park_state == 'done' and self.is_running:
+                                        self.led_pub.publish(Bool(data=led_on))
+                                        led_on = not led_on
+                                        time.sleep(0.3)
+                                    # 종료 시 LED OFF
+                                    self.led_pub.publish(Bool(data=False))
+
+                                self.park_led_thread = threading.Thread(target=led_blink_loop, daemon=True)
+                                self.park_led_thread.start()
+
+                            continue
 
                         # === PARK FSM 끝 ===
 
