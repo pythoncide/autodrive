@@ -30,6 +30,7 @@ setup(
             'tf_broadcaster_imu = peripherals.tf_broadcaster_imu:main',
             'teleop_key_control = peripherals.teleop_key_control:main',
             'led_controller = peripherals.led_controller:main',
+            'lcd_controller = peripherals.lcd_controller:main',
         ],
     },
 )

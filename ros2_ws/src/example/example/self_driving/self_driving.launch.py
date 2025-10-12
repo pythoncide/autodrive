@@ -68,6 +68,21 @@ def launch_setup(context):
         output='screen',
     )
 
+    # LCD 컨트롤러 노드 추가
+    lcd_controller_node = Node(
+        package='peripherals',
+        executable='lcd_controller',
+        name='lcd_controller',
+        output='screen',
+        parameters=[{
+            'rs': 21, 'e': 20, 'd4': 16, 'd5': 12, 'd6': 25, 'd7': 23,
+            'width': 16,
+            'topic': 'ui/lcd',
+            'gpiochip': 0,
+        }],
+    )
+
+
     return [start_arg,
             only_line_follow_arg,
             depth_camera_launch,
@@ -76,6 +91,7 @@ def launch_setup(context):
             yolov5_node, 
             self_driving_node,
             led_controller_node,   # 추가
+            lcd_controller_node,
             ]
 
 def generate_launch_description():
