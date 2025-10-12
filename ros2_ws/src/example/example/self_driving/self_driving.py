@@ -26,7 +26,7 @@ from sdk.common import colors, plot_one_box
 from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState
+from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState, ButtonState
 from std_msgs.msg import Bool, String
 
 
@@ -71,6 +71,7 @@ class SelfDrivingNode(Node):
         self.led_pub = self.create_publisher(Bool, '/led_cmd', 10)  # 브레드보드 LED 제어 퍼블리셔
         self.lcd_pub = self.create_publisher(String, 'ui/lcd', 10) # 브레드보드 LCD 제어 퍼블리셔
         self._lcd_last, self._lcd_ts = "", 0.0 # LCD 스로틀 헬퍼
+        self.but_sub = self.create_subscription(ButtonState, '/ros_robot_controller/button', self.button_callback, 1)
 
         # [3] 서비스 생성
         self.create_service(Trigger, '~/enter', self.enter_srv_callback)
@@ -243,6 +244,10 @@ class SelfDrivingNode(Node):
         self.first_light_seen_ts = None
         self.defer_tl_until_cw_checked = 1.0  # 0.8~1.2s 정도 권장 (로그 gap이 ~0.7s이면 1.0 추천)
 
+        # 버튼 누렸는지 여부
+        self.button = True
+        self.button_cnt = 0
+
     def get_node_state(self, request, response):
         response.success = True
         return response
@@ -347,9 +352,6 @@ class SelfDrivingNode(Node):
         idx2 = (idx + len(self.park_blink_palette)//2) % len(self.park_blink_palette)
         self.set_rgb_dual(self.park_blink_palette[idx], self.park_blink_palette[idx2])
 
-
-
-
     def shutdown(self, signum, frame):
         self.is_running = False
 
@@ -358,6 +360,21 @@ class SelfDrivingNode(Node):
         if self.image_queue.full():           
             self.image_queue.get()
         self.image_queue.put(cv_image)
+
+    def button_callback(self, msg: ButtonState):
+        # msg에는 STM32 보드가 보낸 버튼 상태 데이터가 들어있음
+        # self.get_logger().info(f'\033[1;31m{msg.state}\033[0m')
+        if msg.state == 1:
+            self.get_logger().info(f'\033[1;31mButton {msg.id} 눌림!\033[0m')
+            self.button_cnt += 1
+            if self.button_cnt % 2 == 1:
+                self.button = False
+                self.param_init() # 변수 초기화
+                self.start = True
+            else:
+                self.button = True
+                self.button_cnt = 0
+
 
     def handle_red_light(self):
         """빨간불이면 완전 정지, 빨간불이 사라지면 해제. True 리턴 시 이 프레임은 정지 처리."""
@@ -429,379 +446,380 @@ class SelfDrivingNode(Node):
 
     def main(self):
         while self.is_running:
-            time_start = time.time()
-            try:    
-                image = self.image_queue.get(block=True, timeout=1)
-            except queue.Empty:
-                if not self.is_running:
-                    break
-                else:
-                    continue
-
-            result_image = image.copy()
-            if self.start:
-                binary_image = self.lane_detect.get_binary(image)              
-                #cv2.imshow("binary", binary_image)
-                #cv2.waitKey(1)
-                twist = Twist()
-
-                # line following
-                result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())
-                # self.get_logger().info(f'\033[1;32mlane_x: {lane_x}\033[0m') # 寃�異쒕맂 李⑥꽑 以묒떖??x醫뚰몴
-                # self.get_logger().info(f'\033[1;32mlane_angle: {lane_angle}\033[0m')    # 李⑥꽑 媛곷룄 (吏꾪뻾 諛⑺뼢)
-                
-                if lane_x is not None and lane_x >= 0:
-                    if self.lx_prev is not None:
-                        # 큰 점프는 한 프레임에 lx_jump 만큼만 따라가게 클램프
-                        delta = lane_x - self.lx_prev
-                        if abs(delta) > self.lx_jump:
-                            lane_x = int(self.lx_prev + (self.lx_jump if delta > 0 else -self.lx_jump))
-                        # EMA로 부드럽게
-                        lane_x = int(self.lx_alpha * lane_x + (1 - self.lx_alpha) * self.lx_prev)
-                    self.lx_prev = lane_x
-
-                
-                t = now()
-
-                if self.startup_gate_active:
-                    if self.green_cnt >= self.start_green_on_threshold:
-                        self.startup_gate_active = False
-                        self.set_rgb_color(0, 255, 0)
-                        self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
-                        self.lcd("GREEN detacted", "GO")
-                        # 게이트 해제 후 아래 기존 주행 로직 진행
+            if self.button:
+                time_start = time.time()
+                try:    
+                    image = self.image_queue.get(block=True, timeout=1)
+                except queue.Empty:
+                    if not self.is_running:
+                        break
                     else:
-                        # 아직 출발 불가: 정지 유지
-                        twist = Twist()
-                        self.mecanum_pub.publish(twist)
-                        # LED: 빨간불이 보이면 빨강, 아니면 노랑으로 '대기' 표시
-                        if self.red_cnt > 0:
-                            self.set_rgb_color(255, 0, 0)
-                            self.get_logger().info('\033[1;31m[STARTUP] Waiting: RED detected\033[0m')
-                        else:
-                            self.set_rgb_color(255, 255, 0)
-                            self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
-                            self.lcd("No detacted...", "Wait...") # LCD 대기 표시 출력
-                        # 이 프레임은 더 진행하지 않음
                         continue
 
+                result_image = image.copy()
+                if self.start:
+                    binary_image = self.lane_detect.get_binary(image)              
+                    #cv2.imshow("binary", binary_image)
+                    #cv2.waitKey(1)
+                    twist = Twist()
 
-                if self.after_turn and self.after_turn_ts is not None:
-                    if (t - self.after_turn_ts) > self.after_turn_window:
-                        self.lane_detect.set_roi(self.rois_default)   # ROI 원복
-                        self.after_turn = False
-                        self.after_turn_ts = None
-                
-                # (NEW) 빨간불 우선 처리
-                #if self.handle_red_light():
-                #    continue
+                    # line following
+                    result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())
+                    # self.get_logger().info(f'\033[1;32mlane_x: {lane_x}\033[0m') # 寃�異쒕맂 李⑥꽑 以묒떖??x醫뚰몴
+                    # self.get_logger().info(f'\033[1;32mlane_angle: {lane_angle}\033[0m')    # 李⑥꽑 媛곷룄 (吏꾪뻾 諛⑺뼢)
+                    
+                    if lane_x is not None and lane_x >= 0:
+                        if self.lx_prev is not None:
+                            # 큰 점프는 한 프레임에 lx_jump 만큼만 따라가게 클램프
+                            delta = lane_x - self.lx_prev
+                            if abs(delta) > self.lx_jump:
+                                lane_x = int(self.lx_prev + (self.lx_jump if delta > 0 else -self.lx_jump))
+                            # EMA로 부드럽게
+                            lane_x = int(self.lx_alpha * lane_x + (1 - self.lx_alpha) * self.lx_prev)
+                        self.lx_prev = lane_x
 
-                if (self.park_state == 'idle') and (self.right_state == 'idle'):
-                    if self.cw_state == 'idle':
-                        self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
-                        if self.crosswalk_detected:
-                            self.cw_state = 'stopping'
-                            self.cw_ts = t
-                            self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
-                            self.led_pub.publish(Bool(data=True))  # 횡단보도 정지 시 LED ON
-                            self.first_light_seen_ts = None
-                            self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
-                            self.lcd("CW detected", "Wait 3 seconds...")
+                    
+                    t = now()
 
-                    elif self.cw_state == 'stopping':
-                        # 3초 정지 중에도 신호등 라치 진행(리턴값은 무시)
-                        _ = self.handle_red_light()
-
-                        if t - self.cw_ts < 3.0:
-                            # 3초 정지
+                    if self.startup_gate_active:
+                        if self.green_cnt >= self.start_green_on_threshold:
+                            self.startup_gate_active = False
+                            self.set_rgb_color(0, 255, 0)
+                            self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
+                            self.lcd("GREEN detacted", "GO")
+                            # 게이트 해제 후 아래 기존 주행 로직 진행
+                        else:
+                            # 아직 출발 불가: 정지 유지
                             twist = Twist()
                             self.mecanum_pub.publish(twist)
-                            self.set_rgb_color(255, 0, 0)
-                            continue
-                        else:
-                            seen_light_recent = (
-                                (self.last_red_seen_ts   is not None and (t - self.last_red_seen_ts)   < 2.0) or
-                                (self.last_green_seen_ts is not None and (t - self.last_green_seen_ts) < 2.0)
-                            )
-                            green_recent = (self.last_green_seen_ts is not None and
-                                            (t - self.last_green_seen_ts) < self.green_recent_window)
-
-
-                            if seen_light_recent:
-                                # 신호 있는 교차로: 빨간만 아니고, 최근에 초록을 봤으면 출발
-                                can_go = (self.tl_state != 'red') and green_recent
+                            # LED: 빨간불이 보이면 빨강, 아니면 노랑으로 '대기' 표시
+                            if self.red_cnt > 0:
+                                self.set_rgb_color(255, 0, 0)
+                                self.get_logger().info('\033[1;31m[STARTUP] Waiting: RED detected\033[0m')
                             else:
-                                # 신호 없는 횡단보도: 3초 끝나면 출발 허용
-                                can_go = True
+                                self.set_rgb_color(255, 255, 0)
+                                self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
+                                self.lcd("No detacted...", "Wait...") # LCD 대기 표시 출력
+                            # 이 프레임은 더 진행하지 않음
+                            continue
 
-                            if not can_go:
-                                # 빨간불 보이거나(=tl_state=='red') 아직 초록 신뢰 미달이면 계속 정지 유지
+
+                    if self.after_turn and self.after_turn_ts is not None:
+                        if (t - self.after_turn_ts) > self.after_turn_window:
+                            self.lane_detect.set_roi(self.rois_default)   # ROI 원복
+                            self.after_turn = False
+                            self.after_turn_ts = None
+                    
+                    # (NEW) 빨간불 우선 처리
+                    #if self.handle_red_light():
+                    #    continue
+
+                    if (self.park_state == 'idle') and (self.right_state == 'idle'):
+                        if self.cw_state == 'idle':
+                            self.set_rgb_color(0, 255, 0)  # 주행 중(초록)
+                            if self.crosswalk_detected:
+                                self.cw_state = 'stopping'
+                                self.cw_ts = t
+                                self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
+                                self.led_pub.publish(Bool(data=True))  # 횡단보도 정지 시 LED ON
+                                self.first_light_seen_ts = None
+                                self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
+                                self.lcd("CW detected", "Wait 3 seconds...")
+
+                        elif self.cw_state == 'stopping':
+                            # 3초 정지 중에도 신호등 라치 진행(리턴값은 무시)
+                            _ = self.handle_red_light()
+
+                            if t - self.cw_ts < 3.0:
+                                # 3초 정지
                                 twist = Twist()
                                 self.mecanum_pub.publish(twist)
                                 self.set_rgb_color(255, 0, 0)
-                                # stopping 타이머가 흘러 과하게 누적되지 않게, 기준시각 살짝 재설정(선택)
-                                self.cw_ts = t - 3.0
                                 continue
-                            else :
-                                # 정지 완료 → 쿨다운 진입
-                                self.cw_state = 'cooldown'
-                                self.cw_ts = t
-                                self.set_rgb_color(0, 255, 0)  # 출발 (초록)
-                                self.led_pub.publish(Bool(data=False))  # 횡단보도 출발 시 LED OFF
-                                # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
-                                self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
-                                self.lcd("[CW] CW pass", "Ignore 5 seconds")
+                            else:
+                                seen_light_recent = (
+                                    (self.last_red_seen_ts   is not None and (t - self.last_red_seen_ts)   < 2.0) or
+                                    (self.last_green_seen_ts is not None and (t - self.last_green_seen_ts) < 2.0)
+                                )
+                                green_recent = (self.last_green_seen_ts is not None and
+                                                (t - self.last_green_seen_ts) < self.green_recent_window)
 
-                    elif self.cw_state == 'cooldown':
-                        if t - self.cw_ts >= self.crosswalk_cooldown_duration:
-                            self.cw_state = 'idle'
-                            self.cw_ts = None
-                            self.set_rgb_color(0, 255, 0)  # 주행(초록)
-                            self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
-                            self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.8)
-                            # 이 프레임 즉시 정지 퍼블리시(튐 방지)
-                            self.mecanum_pub.publish(Twist())
-                            # 같은 프레임에서 즉시 신호등 평가(빨간불이면 계속 정지)
+
+                                if seen_light_recent:
+                                    # 신호 있는 교차로: 빨간만 아니고, 최근에 초록을 봤으면 출발
+                                    can_go = (self.tl_state != 'red') and green_recent
+                                else:
+                                    # 신호 없는 횡단보도: 3초 끝나면 출발 허용
+                                    can_go = True
+
+                                if not can_go:
+                                    # 빨간불 보이거나(=tl_state=='red') 아직 초록 신뢰 미달이면 계속 정지 유지
+                                    twist = Twist()
+                                    self.mecanum_pub.publish(twist)
+                                    self.set_rgb_color(255, 0, 0)
+                                    # stopping 타이머가 흘러 과하게 누적되지 않게, 기준시각 살짝 재설정(선택)
+                                    self.cw_ts = t - 3.0
+                                    continue
+                                else :
+                                    # 정지 완료 → 쿨다운 진입
+                                    self.cw_state = 'cooldown'
+                                    self.cw_ts = t
+                                    self.set_rgb_color(0, 255, 0)  # 출발 (초록)
+                                    self.led_pub.publish(Bool(data=False))  # 횡단보도 출발 시 LED OFF
+                                    # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
+                                    self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+                                    self.lcd("[CW] CW pass", "Ignore 5 seconds")
+
+                        elif self.cw_state == 'cooldown':
+                            if t - self.cw_ts >= self.crosswalk_cooldown_duration:
+                                self.cw_state = 'idle'
+                                self.cw_ts = None
+                                self.set_rgb_color(0, 255, 0)  # 주행(초록)
+                                self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
+                                self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.8)
+                                # 이 프레임 즉시 정지 퍼블리시(튐 방지)
+                                self.mecanum_pub.publish(Twist())
+                                # 같은 프레임에서 즉시 신호등 평가(빨간불이면 계속 정지)
+                                if self.handle_red_light():
+                                    continue
+
+
+                    else:
+                        # 파킹 우회전 진행/완료 중엔 CW 감지 자체를 무시
+                        self.crosswalk_detected = False
+
+                    if self.cw_state != 'stopping':
+                        # 최근에 횡단보도를 봤다면 (cw_prefer_window 안) TL 라치 보류 → CW STOPPING 로그가 먼저 찍히도록
+                        if not self.last_cw_seen_ts or (t - self.last_cw_seen_ts) > self.cw_prefer_window:
                             if self.handle_red_light():
                                 continue
 
-
-                else:
-                    # 파킹 우회전 진행/완료 중엔 CW 감지 자체를 무시
-                    self.crosswalk_detected = False
-
-                if self.cw_state != 'stopping':
-                    # 최근에 횡단보도를 봤다면 (cw_prefer_window 안) TL 라치 보류 → CW STOPPING 로그가 먼저 찍히도록
-                    if not self.last_cw_seen_ts or (t - self.last_cw_seen_ts) > self.cw_prefer_window:
-                        if self.handle_red_light():
-                            continue
-
-                #if (self.cw_state not in 'stopping') and not (self.crosswalk_detected) and (self.handle_red_light()):
-                #    continue
+                    #if (self.cw_state not in 'stopping') and not (self.crosswalk_detected) and (self.handle_red_light()):
+                    #    continue
 
 
-                if self.cw_state != 'stopping':
-                    if self.park_state == 'idle':
-                        if self.right_state == 'idle':
-                            # 콜백에서 연속 감지로 라치되면 forward 단계로 진입
-                            if (self.right_cnt >= self.right_on_threshold) and (self.tl_state != 'red'):
-                                self.right_state = 'forward'
-                                self.right_ts = t
-                                self.crosswalk_detected = False
-                                # 우회전 라치 직후(전진 단계 시작) 빨간불 히스토리/라치 리셋 + 그레이스 시작
-                                self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
-                                self.lcd("RIGHT detected", "Forward")
-                        elif self.right_state == 'forward':
-                            if t - self.right_ts < self.right_forward_time:
-                                twist = Twist()
-                                if lane_x >= 0 and not self.stop:
-                                    # 보정값 (좌표 차이)
-                                    error = lane_x - 120  # lane_x가 120보다 크면 오른쪽 → 좌회전 필요
-                                    k = 0.003             # 비례 상수 (튜닝 필요)
-                                    twist.linear.x = self.normal_speed
-                                    twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
+                    if self.cw_state != 'stopping':
+                        if self.park_state == 'idle':
+                            if self.right_state == 'idle':
+                                # 콜백에서 연속 감지로 라치되면 forward 단계로 진입
+                                if (self.right_cnt >= self.right_on_threshold) and (self.tl_state != 'red'):
+                                    self.right_state = 'forward'
+                                    self.right_ts = t
+                                    self.crosswalk_detected = False
+                                    # 우회전 라치 직후(전진 단계 시작) 빨간불 히스토리/라치 리셋 + 그레이스 시작
+                                    self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
+                                    self.lcd("RIGHT detected", "Forward")
+                            elif self.right_state == 'forward':
+                                if t - self.right_ts < self.right_forward_time:
+                                    twist = Twist()
+                                    if lane_x >= 0 and not self.stop:
+                                        # 보정값 (좌표 차이)
+                                        error = lane_x - 120  # lane_x가 120보다 크면 오른쪽 → 좌회전 필요
+                                        k = 0.003             # 비례 상수 (튜닝 필요)
+                                        twist.linear.x = self.normal_speed
+                                        twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
+                                        self.mecanum_pub.publish(twist)
+
+                                    else:
+                                        self.pid.clear()
+                                        self.stuck_count += 1
+                                        if self.stuck_count > 5:
+                                            twist.linear.x = self.slow_down_speed
+                                            twist.angular.z = -0.6
+                                            self.after_turn = True
+                                        self.mecanum_pub.publish(twist)
+                                    continue
+                                else:
+                                    self.right_state = 'turning'
+                                    self.right_ts = t
+                                    self.red_ignore_until = now() + self.right_turn_time + 0.2
+                                    self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
+                                    self.lcd("RIGHT start", "Turning...")
+                            elif self.right_state == 'turning':
+                                if t - self.right_ts < self.right_turn_time:
+                                    twist = Twist()
+                                    twist.linear.x = self.slow_down_speed
+                                    twist.angular.z = self.right_turn_angular
                                     self.mecanum_pub.publish(twist)
 
+                                    # 우회전 중 LED 깜빡이기 (0.3초 간격)
+                                    if int((t * 2) % 2) == 0:  # 약 0.5초 단위 토글
+                                        self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 왼쪽=초록, 오른쪽=노랑
+                                    else:
+                                        self.set_rgb_dual((0, 255, 0), (0, 0, 0))      # 오른쪽 OFF
+                                    continue
                                 else:
-                                    self.pid.clear()
-                                    self.stuck_count += 1
-                                    if self.stuck_count > 5:
-                                        twist.linear.x = self.slow_down_speed
-                                        twist.angular.z = -0.6
-                                        self.after_turn = True
-                                    self.mecanum_pub.publish(twist)
-                                continue
-                            else:
-                                self.right_state = 'turning'
-                                self.right_ts = t
-                                self.red_ignore_until = now() + self.right_turn_time + 0.2
-                                self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
-                                self.lcd("RIGHT start", "Turning...")
-                        elif self.right_state == 'turning':
-                            if t - self.right_ts < self.right_turn_time:
-                                twist = Twist()
-                                twist.linear.x = self.slow_down_speed
-                                twist.angular.z = self.right_turn_angular
-                                self.mecanum_pub.publish(twist)
+                                    # 시퀀스 종료 및 리셋
+                                    self.right_state = 'idle'
+                                    self.right_ts = None
+                                    self.right_cnt = 0
+                                    self.cw_state = 'cooldown'
+                                    self.cw_ts = t
+                                    self.crosswalk_detected = False
 
-                                # 우회전 중 LED 깜빡이기 (0.3초 간격)
-                                if int((t * 2) % 2) == 0:  # 약 0.5초 단위 토글
-                                    self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 왼쪽=초록, 오른쪽=노랑
-                                else:
-                                    self.set_rgb_dual((0, 255, 0), (0, 0, 0))      # 오른쪽 OFF
-                                continue
-                            else:
-                                # 시퀀스 종료 및 리셋
-                                self.right_state = 'idle'
-                                self.right_ts = None
+                                    self.after_turn = True
+                                    self.after_turn_ts = t
+                                    self.lane_detect.set_roi(self.rois_near)
+                                    self.red_ignore_until = now() + self.red_post_right_ignore
+                                    # [ADD] LED 블링크 확실히 종료
+                                    self.blink_state = False
+                                    self.last_blink_time = now()      # (선택) 주기 기준 재설정
+
+                                    self.get_logger().info(
+                                        f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
+                                    )
+                                    self.set_rgb_color(0, 255, 0)  # 주행 (초록)
+                                    self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
+                                    self.lcd("RIGHT completed", "Lanedetect start")
+
+                        # === PARK FSM 시작 ===
+                        if self.park_state == 'idle':
+                            if self.park_latch:
+                                self.park_state = 'forward'
+                                self.park_ts = t
+                                self._park_align_good = 0
+                                self.stuck_count = 0
+                                # 우회전 라치 초기화 (경합 방지)
                                 self.right_cnt = 0
-                                self.cw_state = 'cooldown'
-                                self.cw_ts = t
+                                self.right_state = 'idle'
+                                self.park_cnt = 0
+                                self.park_latch = False # 라치 해제
+                                self.cw_state = 'idle'          # CW STOP 상태가 남아 파킹 FSM 막는 것 방지
+                                self.cw_ts = None
                                 self.crosswalk_detected = False
+                                self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
+                                self.lcd("PARK detected", "Forward")
+                        
+                        elif self.park_state == 'forward':
+                            if t - self.park_ts < self.park_forward_time:
+                                twist = Twist()
+                                twist.linear.x = self.park_forward_speed
+                                twist.angular.z = 0.0
+                                self.mecanum_pub.publish(twist)
+                                continue
+                            else:
+                                self.park_state = 'strafe'
+                                self.park_ts = t
+                                self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
+                                self.lcd("PARK start", "Parking...")
 
-                                self.after_turn = True
-                                self.after_turn_ts = t
-                                self.lane_detect.set_roi(self.rois_near)
-                                self.red_ignore_until = now() + self.red_post_right_ignore
-                                # [ADD] LED 블링크 확실히 종료
-                                self.blink_state = False
-                                self.last_blink_time = now()      # (선택) 주기 기준 재설정
+                        elif self.park_state == 'strafe':
+                            if t - self.park_ts < self.park_strafe_time:
+                                twist = Twist()
+                                twist.linear.x = 0.0
+                                twist.linear.y = self.park_y_sign * self.park_strafe_speed
+                                twist.angular.z = 0.0
+                                self.mecanum_pub.publish(twist)
+                                continue
+                            else:
+                                self.park_state = 'done'
+                                self.park_ts = None
+                                self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
+                                self.lcd("PARK complete!", "Good Bye!")
 
-                                self.get_logger().info(
-                                    f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
-                                )
-                                self.set_rgb_color(0, 255, 0)  # 주행 (초록)
-                                self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
-                                self.lcd("RIGHT completed", "Lanedetect start")
-
-                    # === PARK FSM 시작 ===
-                    if self.park_state == 'idle':
-                        if self.park_latch:
-                            self.park_state = 'forward'
-                            self.park_ts = t
-                            self._park_align_good = 0
-                            self.stuck_count = 0
-                            # 우회전 라치 초기화 (경합 방지)
+                        elif self.park_state == 'done':
+                            # 완전 정지 후 주행 비활성화
+                            twist = Twist()                  # 0,0,0
+                            self.mecanum_pub.publish(twist)
+                            self.start = False               # 차선 추종/우회전 FSM 모두 비활성화
+                            self.park_cnt = 0 # 라치에 의한 재 트리거 방지
                             self.right_cnt = 0
-                            self.right_state = 'idle'
-                            self.park_cnt = 0
-                            self.park_latch = False # 라치 해제
-                            self.cw_state = 'idle'          # CW STOP 상태가 남아 파킹 FSM 막는 것 방지
-                            self.cw_ts = None
-                            self.crosswalk_detected = False
-                            self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
-                            self.lcd("PARK detected", "Forward")
-                    
-                    elif self.park_state == 'forward':
-                        if t - self.park_ts < self.park_forward_time:
-                            twist = Twist()
-                            twist.linear.x = self.park_forward_speed
-                            twist.angular.z = 0.0
-                            self.mecanum_pub.publish(twist)
-                            continue
+                            self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
+                            # 여기서 1회 점멸 호출(이 프레임)
+                            self.blink_all_leds(t)
+                            continue                         # 아래 P제어 등 스킵해서 정지 유지
+
+                        # === PARK FSM 끝 ===
+
+                    if lane_x >= 0 and not self.stop:
+                        # self.get_logger().info(f'\033[1;32mStart Tracking\033[0m')
+                        if lane_x > 270:
+                            self.count_turn += 1
+                            if self.count_turn > 5:
+                                self.count_turn = 0
+                                twist.linear.x = self.slow_down_speed
+                                twist.angular.z = -0.6
+                                self.after_turn = True
+                                self.mecanum_pub.publish(twist)
+                                
                         else:
-                            self.park_state = 'strafe'
-                            self.park_ts = t
-                            self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
-                            self.lcd("PARK start", "Parking...")
-
-                    elif self.park_state == 'strafe':
-                        if t - self.park_ts < self.park_strafe_time:
-                            twist = Twist()
-                            twist.linear.x = 0.0
-                            twist.linear.y = self.park_y_sign * self.park_strafe_speed
-                            twist.angular.z = 0.0
-                            self.mecanum_pub.publish(twist)
-                            continue
-                        else:
-                            self.park_state = 'done'
-                            self.park_ts = None
-                            self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
-                            self.lcd("PARK complete!", "Good Bye!")
-
-                    elif self.park_state == 'done':
-                        # 완전 정지 후 주행 비활성화
-                        twist = Twist()                  # 0,0,0
-                        self.mecanum_pub.publish(twist)
-                        self.start = False               # 차선 추종/우회전 FSM 모두 비활성화
-                        self.park_cnt = 0 # 라치에 의한 재 트리거 방지
-                        self.right_cnt = 0
-                        self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
-                        # 여기서 1회 점멸 호출(이 프레임)
-                        self.blink_all_leds(t)
-                        continue                         # 아래 P제어 등 스킵해서 정지 유지
-
-                    # === PARK FSM 끝 ===
-
-                if lane_x >= 0 and not self.stop:
-                    # self.get_logger().info(f'\033[1;32mStart Tracking\033[0m')
-                    if lane_x > 270:
-                        self.count_turn += 1
-                        if self.count_turn > 5:
+                            twist.linear.x = self.normal_speed
                             self.count_turn = 0
+                            if lane_x >= 0 and not self.stop:
+                                # 보정값 (좌표 차이)
+                                error = lane_x - 120  # lane_x가 130보다 크면 오른쪽 → 좌회전 필요
+                                k = 0.003             # 비례 상수 (튜닝 필요)
+                                twist.linear.x = self.normal_speed
+                                twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
+                                
+                                # LED: 초록색 (단, 빨간불·횡단보도·주차·우회전 중엔 덮어쓰지 않음) 쿨다운 중에도 초록 유지 (빨간불/파킹/우회전 중만 제외)
+                                if (self.tl_state != 'red'
+                                    and self.park_state == 'idle'
+                                    and self.right_state == 'idle'):
+                                    self.set_rgb_color(0, 255, 0)
+
+                                self.mecanum_pub.publish(twist)
+                    else:
+                        self.pid.clear()
+                        self.stuck_count += 1
+                        if self.stuck_count > 5:
                             twist.linear.x = self.slow_down_speed
                             twist.angular.z = -0.6
                             self.after_turn = True
-                            self.mecanum_pub.publish(twist)
-                            
-                    else:
-                        twist.linear.x = self.normal_speed
-                        self.count_turn = 0
-                        if lane_x >= 0 and not self.stop:
-                            # 보정값 (좌표 차이)
-                            error = lane_x - 120  # lane_x가 130보다 크면 오른쪽 → 좌회전 필요
-                            k = 0.003             # 비례 상수 (튜닝 필요)
-                            twist.linear.x = self.normal_speed
-                            twist.angular.z = -k * error  # error > 0 → 왼쪽으로 회전 (부호 맞게 튜닝)
-                            
-                            # LED: 초록색 (단, 빨간불·횡단보도·주차·우회전 중엔 덮어쓰지 않음) 쿨다운 중에도 초록 유지 (빨간불/파킹/우회전 중만 제외)
-                            if (self.tl_state != 'red'
-                                and self.park_state == 'idle'
-                                and self.right_state == 'idle'):
+
+                            # 8프레임 이상이면 '실제 회전'으로 간주
+                            if self.stuck_count >= 8:
+                            #    self.get_logger().info(f'\033[1;33m[LANE LOST] turning to recover lane (frame={self.stuck_count})\033[0m')
+
+                                # 깜빡이 시작
+                                if t - self.last_blink_time > self.blink_period:
+                                    self.blink_state = not self.blink_state
+                                    self.last_blink_time = t
+
+                                if self.blink_state:
+                                    self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 오른쪽 노란색 켜기
+                                else:
+                                    self.set_rgb_dual((0, 255, 0), (0, 0, 0)) 
+
+                            # 회전 중엔 리셋 타이머 초기화
+                            self.blink_reset_ts = t
+                        else:
+                            # 차선 복귀 시 LED 초기화
+                            if lane_x >= 0 and self.blink_state:
+                                self.blink_state = False
                                 self.set_rgb_color(0, 255, 0)
+                            elif lane_x >= 0 and not self.blink_state:
+                                self.set_rgb_color(0, 255, 0)
+                        self.mecanum_pub.publish(twist)
 
-                            self.mecanum_pub.publish(twist)
+                    if not self.get_parameter('only_line_follow').value and self.objects_info:
+                        for i in self.objects_info:
+                            box = i.box
+                            class_name = i.class_name
+                            cls_conf = i.score
+                            cls_id = self.classes.index(class_name)
+                            color = colors(cls_id, True)
+                            plot_one_box(
+                                box,
+                                result_image,
+                                color=color,
+                                label="{}:{:.2f}".format(class_name, cls_conf),
+                            )
+
                 else:
-                    self.pid.clear()
-                    self.stuck_count += 1
-                    if self.stuck_count > 5:
-                        twist.linear.x = self.slow_down_speed
-                        twist.angular.z = -0.6
-                        self.after_turn = True
+                    if self.park_state == 'done':
+                        self.blink_all_leds(now())
+                    time.sleep(0.01)
 
-                        # 8프레임 이상이면 '실제 회전'으로 간주
-                        if self.stuck_count >= 8:
-                        #    self.get_logger().info(f'\033[1;33m[LANE LOST] turning to recover lane (frame={self.stuck_count})\033[0m')
+                bgr_image = result_image
+                if self.display:
+                    self.fps.update()
+                    bgr_image = self.fps.show_fps(bgr_image)
 
-                            # 깜빡이 시작
-                            if t - self.last_blink_time > self.blink_period:
-                                self.blink_state = not self.blink_state
-                                self.last_blink_time = t
-
-                            if self.blink_state:
-                                self.set_rgb_dual((0, 255, 0), (255, 255, 0))  # 오른쪽 노란색 켜기
-                            else:
-                                self.set_rgb_dual((0, 255, 0), (0, 0, 0)) 
-
-                        # 회전 중엔 리셋 타이머 초기화
-                        self.blink_reset_ts = t
-                    else:
-                        # 차선 복귀 시 LED 초기화
-                        if lane_x >= 0 and self.blink_state:
-                            self.blink_state = False
-                            self.set_rgb_color(0, 255, 0)
-                        elif lane_x >= 0 and not self.blink_state:
-                            self.set_rgb_color(0, 255, 0)
-                    self.mecanum_pub.publish(twist)
-
-                if not self.get_parameter('only_line_follow').value and self.objects_info:
-                    for i in self.objects_info:
-                        box = i.box
-                        class_name = i.class_name
-                        cls_conf = i.score
-                        cls_id = self.classes.index(class_name)
-                        color = colors(cls_id, True)
-                        plot_one_box(
-                            box,
-                            result_image,
-                            color=color,
-                            label="{}:{:.2f}".format(class_name, cls_conf),
-                        )
-
-            else:
-                if self.park_state == 'done':
-                    self.blink_all_leds(now())
-                time.sleep(0.01)
-
-            bgr_image = result_image
-            if self.display:
-                self.fps.update()
-                bgr_image = self.fps.show_fps(bgr_image)
-
-            self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
-            time_d = 0.03 - (time.time() - time_start)
-            if time_d > 0:
-                time.sleep(time_d)
+                self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
+                time_d = 0.03 - (time.time() - time_start)
+                if time_d > 0:
+                    time.sleep(time_d)
         self.mecanum_pub.publish(Twist())
         rclpy.shutdown()
 
