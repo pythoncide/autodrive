@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=SelfDriving Autostart
+Comment=Run docker_shell at login
+Exec=/usr/bin/lxterminal -e bash -lc 'bash "$HOME/docker_shell.sh"; echo; echo "[Exit] Ctrl+C to close"; exec bash'
+X-GNOME-Autostart-enabled=true
+Terminal=false
