@@ -72,6 +72,18 @@ class SelfDrivingNode(Node):
         self.lcd_pub = self.create_publisher(String, 'ui/lcd', 10) # 브레드보드 LCD 제어 퍼블리셔
         self._lcd_last, self._lcd_ts = "", 0.0 # LCD 스로틀 헬퍼
         self.but_sub = self.create_subscription(ButtonState, '/ros_robot_controller/button', self.button_callback, 1)
+        
+        self.buzzer_pub = self.create_publisher(BuzzerState, '/ros_robot_controller/set_buzzer', 1)
+
+        # 음악 재생 상태 변수
+        self._music_lock = threading.Lock()
+        self._music_stop_evt = threading.Event()
+        self._music_thread = None
+        self._music_playing = False
+
+        # 파킹 음악 타이밍
+        self.park_music_started = False
+        self.park_hold_end_ts = None
 
         # [3] 서비스 생성
         self.create_service(Trigger, '~/enter', self.enter_srv_callback)
@@ -117,34 +129,14 @@ class SelfDrivingNode(Node):
         self.start = False
         self.enter = False
         self.stop = False
-        self.have_turn_right = False
-        self.detect_turn_right = False
-        self.detect_far_lane = False
-        self.park_x = -1
-        self.start_turn_time_stamp = 0
         self.count_turn = 0
-        self.start_turn = False
-        self.count_right = 0
-        self.count_right_miss = 0
-        self.turn_right = False
-        self.last_park_detect = False
-        self.count_park = 0
-        self.start_park = False
-        self.count_crosswalk = 0
         self.crosswalk_distance = 0
-        self.crosswalk_length = 0.1 + 0.3
-        self.start_slow_down = False
         self.normal_speed = 0.3
         self.slow_down_speed = 0.14 # original 0.1
         self.traffic_signs_status = None
-        self.red_loss_count = 0
-        self.object_sub = None
-        self.image_sub = None
         self.objects_info = []
         self.stuck_count = 0
         self.after_turn = False
-
-        self.park_led_thread = None
 
         ### --- 우회전 깜박이를 위한 변수 --- ###
         self.blink_period = 0.5  # LED 깜빡임 주기(초)
@@ -153,8 +145,6 @@ class SelfDrivingNode(Node):
  
         # self.crosswalk_stop = False
         self.crosswalk_detected = False
-        self.crosswalk_stop_start_time = None
-        self.crosswalk_cooldown_time = None  
         self.crosswalk_cooldown_duration = 5.0
 
         # idle → stopping(3s 정지) → cooldown(5s 무시) → idle
@@ -187,7 +177,7 @@ class SelfDrivingNode(Node):
         self.park_latch = False
 
         # 동작 시간/속도 (코스에 맞게 튜닝)
-        self.park_forward_time = 5.8    # 전진 시간(s)
+        self.park_forward_time = 5.6    # 전진 시간(s)
         self.park_forward_speed = 0.18
         self.park_strafe_time = 3.0     # y축 이동 시간(s)
         self.park_strafe_speed = 0.18
@@ -249,6 +239,12 @@ class SelfDrivingNode(Node):
         # 버튼 누렸는지 여부
         self.button = True
         self.button_cnt = 0
+
+        self._stop_music()
+        self.park_music_started = False
+        self.park_hold_end_ts = None
+        
+        self.park_led_thread = None
 
     def get_node_state(self, request, response):
         response.success = True
@@ -354,8 +350,76 @@ class SelfDrivingNode(Node):
         idx2 = (idx + len(self.park_blink_palette)//2) % len(self.park_blink_palette)
         self.set_rgb_dual(self.park_blink_palette[idx], self.park_blink_palette[idx2])
 
+    def _buzz(self, freq_hz: int, on_s: float, off_s: float = 0.01, repeat: int = 1):
+        msg = BuzzerState()
+        msg.freq = int(freq_hz)
+        msg.on_time = float(on_s)
+        msg.off_time = float(off_s)
+        msg.repeat = int(max(1, repeat))
+        self.buzzer_pub.publish(msg)
+
+    def _start_music_loop(self, notes: list, tempo_bpm: int = 138, gap: float = 0.02):
+        NOTE = {
+            'A4': 440, 'A#4': 466, 'Bb4': 466, 'B4': 494,
+            'C4': 262, 'C#4': 277, 'Db4': 277, 'D4': 294, 'D#4': 311, 'Eb4': 311,
+            'E4': 330, 'F4': 349, 'F#4': 370, 'Gb4': 370, 'G4': 392, 'G#4': 415, 'Ab4': 415,
+            'A5': 880, 'A#5': 932, 'Bb5': 932, 'B5': 988,
+            'C5': 523, 'C#5': 554, 'Db5': 554, 'D5': 587, 'D#5': 622, 'Eb5': 622,
+            'E5': 659, 'F5': 698, 'F#5': 740, 'Gb5': 740, 'G5': 784, 'G#5': 831, 'Ab5': 831,
+        }
+        beat = 60.0 / float(tempo_bpm)
+
+        with self._music_lock:
+            if self._music_playing:
+                return
+            self._music_playing = True
+            self._music_stop_evt.clear()
+
+        def runner():
+            try:
+                while not self._music_stop_evt.is_set():
+                    for note, length in notes:
+                        if self._music_stop_evt.is_set():
+                            break
+                        dur = beat * float(length)
+                        if note in ('REST', None):
+                            time.sleep(dur)
+                        else:
+                            f = NOTE.get(note)
+                            if f:
+                                on_t = max(0.04, dur * 0.88)
+                                off_t = max(gap, dur - on_t)
+                                self._buzz(f, on_t, off_t, 1)
+                            time.sleep(dur)
+            finally:
+                with self._music_lock:
+                    self._music_playing = False
+
+        self._music_thread = threading.Thread(target=runner, daemon=True)
+        self._music_thread.start()
+
+    def _stop_music(self):
+        with self._music_lock:
+            if not self._music_playing:
+                return
+            self._music_stop_evt.set()
+
+    def _fur_elise_theme(self):
+        return [
+            ('E5', 0.5), ('D#5', 0.5), ('E5', 0.5), ('D#5', 0.5), ('E5', 0.5), ('B4', 0.5),
+            ('D5', 0.5), ('C5', 0.5), ('A4', 1.0),
+            ('REST', 0.25),
+            ('C4', 0.5), ('E4', 0.5), ('A4', 1.0), ('B4', 1.0),
+            ('REST', 0.25),
+            ('E4', 0.5), ('G#4', 0.5), ('B4', 1.0), ('C5', 1.0),
+            ('REST', 0.25),
+            ('E4', 0.5), ('E5', 0.5), ('D#5', 0.5), ('E5', 0.5), ('D#5', 0.5), ('E5', 0.5),
+            ('B4', 0.5), ('D5', 0.5), ('C5', 0.5), ('A4', 1.0),
+        ]
+
     def shutdown(self, signum, frame):
         self.is_running = False
+        self._stop_music()
 
     def image_callback(self, ros_image):   
         cv_image = self.bridge.imgmsg_to_cv2(ros_image, "bgr8")
@@ -488,7 +552,7 @@ class SelfDrivingNode(Node):
                             self.startup_gate_active = False
                             self.set_rgb_color(0, 255, 0)
                             self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
-                            self.lcd("GREEN detacted", "GO")
+                            self.lcd("GREEN detected", "GO")
                             # 게이트 해제 후 아래 기존 주행 로직 진행
                         else:
                             # 아직 출발 불가: 정지 유지
@@ -678,6 +742,10 @@ class SelfDrivingNode(Node):
                         if self.park_state == 'idle':
                             if self.park_latch:
                                 self.park_state = 'forward'
+                                # 파킹 시작 즉시 엘리제를 위하여 재생
+                                if not self.park_music_started:
+                                    self.park_music_started = True
+                                    self._start_music_loop(self._fur_elise_theme(), tempo_bpm=138, gap=0.02)
                                 self.park_ts = t
                                 self._park_align_good = 0
                                 self.stuck_count = 0
@@ -717,19 +785,20 @@ class SelfDrivingNode(Node):
                                 self.park_state = 'done'
                                 self.park_ts = None
                                 self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
+                                self.park_hold_end_ts = now() + 10.0
                                 self.lcd("PARK complete!", "Good Bye!")
-
+                                
                         elif self.park_state == 'done':
                             # 완전 정지 후 주행 비활성화
                             twist = Twist()
                             self.mecanum_pub.publish(twist)
-                            self.start = False               # 차선 추종/우회전 FSM 모두 비활성화
-                            self.park_cnt = 0 # 라치에 의한 재 트리거 방지
+                            self.start = False
+                            self.park_cnt = 0
                             self.right_cnt = 0
                             self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
 
                             # RGB LED 순환 점멸
-                            self.blink_all_leds(t)  # 아래 P제어 등 스킵해서 정지 유지
+                            self.blink_all_leds(t)
 
                             # --- [ADD] 브레드보드 LED 0.3초 깜빡임 스레드 시작 ---
                             if self.park_led_thread is None or not self.park_led_thread.is_alive():
@@ -746,7 +815,6 @@ class SelfDrivingNode(Node):
                                 self.park_led_thread.start()
 
                             continue
-
                         # === PARK FSM 끝 ===
 
                     if lane_x >= 0 and not self.stop:
@@ -827,6 +895,10 @@ class SelfDrivingNode(Node):
                 else:
                     if self.park_state == 'done':
                         self.blink_all_leds(now())
+                        if self.park_hold_end_ts is not None and now() >= self.park_hold_end_ts:
+                            self._stop_music()
+                            self.park_hold_end_ts = None
+                            self.park_music_started = False
                     time.sleep(0.01)
 
                 bgr_image = result_image
