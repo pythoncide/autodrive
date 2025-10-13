@@ -43,7 +43,7 @@ class SelfDrivingNode(Node):
 
         self.name = name
         self.is_running = True
-        self.pid = pid.PID(0.4, 0.0, 0.05)
+        self.pid = pid.PID(0.28, 0.0, 0.04)
         self.debug = False
         self.fps = fps.FPS()
         self.image_queue = queue.Queue(maxsize=2)
@@ -105,7 +105,7 @@ class SelfDrivingNode(Node):
         # [6] 타이머 등록 및 초기화 로직 실행
         self.timer = self.create_timer(0.0, self.init_process, callback_group=timer_cb_group)
 
-        self.get_logger().info('\033[1;32m[SelfDrivingNode Initialized]\033[0m')
+        #self.get_logger().info('\033[1;32m[SelfDrivingNode Initialized]\033[0m')
 
     def init_process(self):
         self.timer.cancel()
@@ -123,7 +123,7 @@ class SelfDrivingNode(Node):
 
         threading.Thread(target=self.main, daemon=True).start()
         self.create_service(Trigger, '~/init_finish', self.get_node_state)
-        self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
+        #self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
 
     def param_init(self):
         self.start = False
@@ -131,8 +131,8 @@ class SelfDrivingNode(Node):
         self.stop = False
         self.count_turn = 0
         self.crosswalk_distance = 0
-        self.normal_speed = 0.3
-        self.slow_down_speed = 0.14 # original 0.1
+        self.normal_speed = 0.5
+        self.slow_down_speed = 0.13 # original 0.1
         self.traffic_signs_status = None
         self.objects_info = []
         self.stuck_count = 0
@@ -145,7 +145,7 @@ class SelfDrivingNode(Node):
  
         # self.crosswalk_stop = False
         self.crosswalk_detected = False
-        self.crosswalk_cooldown_duration = 5.0
+        self.crosswalk_cooldown_duration = 2.5
 
         # idle → stopping(3s 정지) → cooldown(5s 무시) → idle
         self.cw_state = 'idle'    # 'idle' | 'stopping' | 'cooldown'
@@ -161,9 +161,9 @@ class SelfDrivingNode(Node):
         # 튜닝 파라미터: 로그 4~6회(≈연속 프레임)면 라치
         self.right_on_threshold = 4      # 4 이상에서 라치
         # 동작 시간(초): 코스에 맞게 조정
-        self.right_forward_time = 2.00   # 전진 지속
-        self.right_turn_time = 2.50      # 우회전 지속
-        self.right_turn_angular = -0.60  # 우회전 각속도(좌핸들 기준 음수)
+        self.right_forward_time = 0.60   # 전진 지속
+        self.right_turn_time = 1.60      # 우회전 지속
+        self.right_turn_angular = -0.82  # 우회전 각속도(좌핸들 기준 음수)
 
         self.set_rgb_color(255, 0, 0)  # 초기 상태 빨강 (대기/정지)
 
@@ -172,14 +172,14 @@ class SelfDrivingNode(Node):
         self.park_ts = None
         self.park_seen = False
         self.park_cnt = 0
-        self.park_on_threshold = 3     # 연속 감지 임계(프레임 수)
+        self.park_on_threshold = 2     # 연속 감지 임계(프레임 수)
 
         self.park_latch = False
 
         # 동작 시간/속도 (코스에 맞게 튜닝)
-        self.park_forward_time = 5.6    # 전진 시간(s)
-        self.park_forward_speed = 0.18
-        self.park_strafe_time = 3.0     # y축 이동 시간(s)
+        self.park_forward_time = 2.8    # 전진 시간(s)
+        self.park_forward_speed = 0.3
+        self.park_strafe_time = 2.7     # y축 이동 시간(s)
         self.park_strafe_speed = 0.18
 
         # y축 이동 방향: 보통 오른쪽 주차면 -1 (컨트롤러에 따라 반대일 수 있음)
@@ -219,7 +219,7 @@ class SelfDrivingNode(Node):
 
         self.lx_prev = None
         self.lx_alpha = 0.6   # 0.0~1.0, 클수록 새 값 가중 ↑
-        self.lx_jump = 40     # 한 프레임에서 허용할 최대 이동 픽셀
+        self.lx_jump = 65     # 한 프레임에서 허용할 최대 이동 픽셀
 
         self.red_ignore_until = None
         self.red_post_right_ignore = 1.0  # 우회전 완료 후 추가 무시 시간(초)
@@ -257,7 +257,7 @@ class SelfDrivingNode(Node):
                 return future.result()
 
     def enter_srv_callback(self, request, response):    
-        self.get_logger().info('\033[1;32m%s\033[0m' % "self driving enter")
+        #self.get_logger().info('\033[1;32m%s\033[0m' % "self driving enter")
         with self.lock:
             self.start = False
             self.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image', self.image_callback, 1)
@@ -272,7 +272,7 @@ class SelfDrivingNode(Node):
         return response
 
     def exit_srv_callback(self, request, response):     
-        self.get_logger().info('\033[1;32m%s\033[0m' % "self driving exit")
+        #self.get_logger().info('\033[1;32m%s\033[0m' % "self driving exit")
         with self.lock:
             self.mecanum_pub.publish(Twist())
         self.param_init()
@@ -281,7 +281,7 @@ class SelfDrivingNode(Node):
         return response
 
     def set_running_srv_callback(self, request, response):  
-        self.get_logger().info('\033[1;32m%s\033[0m' % "set_running")
+        #self.get_logger().info('\033[1;32m%s\033[0m' % "set_running")
         with self.lock:
             self.start = request.data   
             if not self.start:
@@ -431,7 +431,7 @@ class SelfDrivingNode(Node):
         # msg에는 STM32 보드가 보낸 버튼 상태 데이터가 들어있음
         # self.get_logger().info(f'\033[1;31m{msg.state}\033[0m')
         if msg.state == 1:
-            self.get_logger().info(f'\033[1;31mButton {msg.id} 눌림!\033[0m')
+            #self.get_logger().info(f'\033[1;31mButton {msg.id} 눌림!\033[0m')
             self.button_cnt += 1
             if self.button_cnt % 2 == 1:
                 self.button = False
@@ -473,7 +473,7 @@ class SelfDrivingNode(Node):
                 self.green_cnt = 0
                 self.set_rgb_color(255, 0, 0)
                 self.led_pub.publish(Bool(data=True))  # 빨간불 정지 시 LED ON
-                self.get_logger().info('\033[1;31m[TL] RED → STOP\033[0m')
+                #self.get_logger().info('\033[1;31m[TL] RED → STOP\033[0m')
 
         # 유지/해제
         if self.tl_state == 'red':
@@ -501,7 +501,7 @@ class SelfDrivingNode(Node):
                 self.tl_hold_until = None
                 self.set_rgb_color(0, 255, 0)
                 self.led_pub.publish(Bool(data=False))  # 초록불 출발 시 LED OFF
-                self.get_logger().info('\033[1;32m[TL] GO (green)\033[0m')
+                #self.get_logger().info('\033[1;32m[TL] GO (green)\033[0m')
                 # 여기서 정지 퍼블리시는 하지 않음 → 다음 로직이 자연스럽게 출발
             else:
                 # 계속 정지
@@ -551,7 +551,7 @@ class SelfDrivingNode(Node):
                         if self.green_cnt >= self.start_green_on_threshold:
                             self.startup_gate_active = False
                             self.set_rgb_color(0, 255, 0)
-                            self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
+                            #self.get_logger().info('\033[1;32m[STARTUP] GREEN latched → GO\033[0m')
                             self.lcd("GREEN detected", "GO")
                             # 게이트 해제 후 아래 기존 주행 로직 진행
                         else:
@@ -561,10 +561,10 @@ class SelfDrivingNode(Node):
                             # LED: 빨간불이 보이면 빨강, 아니면 노랑으로 '대기' 표시
                             if self.red_cnt > 0:
                                 self.set_rgb_color(255, 0, 0)
-                                self.get_logger().info('\033[1;31m[STARTUP] Waiting: RED detected\033[0m')
+                                #self.get_logger().info('\033[1;31m[STARTUP] Waiting: RED detected\033[0m')
                             else:
                                 self.set_rgb_color(255, 255, 0)
-                                self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
+                                #self.get_logger().info('\033[1;33m[STARTUP] Waiting: No GREEN yet\033[0m')
                                 self.lcd("No detacted...", "Wait...") # LCD 대기 표시 출력
                             # 이 프레임은 더 진행하지 않음
                             continue
@@ -589,15 +589,15 @@ class SelfDrivingNode(Node):
                                 self.set_rgb_color(255, 0, 0)  # 정지 시작(빨강)
                                 self.led_pub.publish(Bool(data=True))  # 횡단보도 정지 시 LED ON
                                 self.first_light_seen_ts = None
-                                self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
-                                self.lcd("CW detected", "Wait 3 seconds...")
+                                #self.get_logger().info('\033[1;35m[CW] STOPPING start (3s)\033[0m')
+                                self.lcd("CW detected", "Wait 1 seconds...")
 
                         elif self.cw_state == 'stopping':
-                            # 3초 정지 중에도 신호등 라치 진행(리턴값은 무시)
+                            # 1초 정지 중에도 신호등 라치 진행(리턴값은 무시)
                             _ = self.handle_red_light()
 
-                            if t - self.cw_ts < 3.0:
-                                # 3초 정지
+                            if t - self.cw_ts < 1.0:
+                                # 1초 정지
                                 twist = Twist()
                                 self.mecanum_pub.publish(twist)
                                 self.set_rgb_color(255, 0, 0)
@@ -615,7 +615,7 @@ class SelfDrivingNode(Node):
                                     # 신호 있는 교차로: 빨간만 아니고, 최근에 초록을 봤으면 출발
                                     can_go = (self.tl_state != 'red') and green_recent
                                 else:
-                                    # 신호 없는 횡단보도: 3초 끝나면 출발 허용
+                                    # 신호 없는 횡단보도: 1초 끝나면 출발 허용
                                     can_go = True
 
                                 if not can_go:
@@ -624,7 +624,7 @@ class SelfDrivingNode(Node):
                                     self.mecanum_pub.publish(twist)
                                     self.set_rgb_color(255, 0, 0)
                                     # stopping 타이머가 흘러 과하게 누적되지 않게, 기준시각 살짝 재설정(선택)
-                                    self.cw_ts = t - 3.0
+                                    self.cw_ts = t - 1.0
                                     continue
                                 else :
                                     # 정지 완료 → 쿨다운 진입
@@ -633,7 +633,7 @@ class SelfDrivingNode(Node):
                                     self.set_rgb_color(0, 255, 0)  # 출발 (초록)
                                     self.led_pub.publish(Bool(data=False))  # 횡단보도 출발 시 LED OFF
                                     # crosswalk_detected 플래그는 콜백에서 다시 갱신됨
-                                    self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
+                                    #self.get_logger().info('\033[1;31m[CW] START IGNORE (cooldown 5s)\033[0m')
                                     self.lcd("[CW] CW pass", "Ignore 5 seconds")
 
                         elif self.cw_state == 'cooldown':
@@ -641,7 +641,7 @@ class SelfDrivingNode(Node):
                                 self.cw_state = 'idle'
                                 self.cw_ts = None
                                 self.set_rgb_color(0, 255, 0)  # 주행(초록)
-                                self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
+                                #self.get_logger().info('\033[1;36m[CW] END IGNORE → IDLE\033[0m')
                                 self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.8)
                                 # 이 프레임 즉시 정지 퍼블리시(튐 방지)
                                 self.mecanum_pub.publish(Twist())
@@ -673,7 +673,7 @@ class SelfDrivingNode(Node):
                                     self.right_ts = t
                                     self.crosswalk_detected = False
                                     # 우회전 라치 직후(전진 단계 시작) 빨간불 히스토리/라치 리셋 + 그레이스 시작
-                                    self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
+                                    #self.get_logger().info('\033[1;36m[RIGHT] FORWARD start\033[0m')
                                     self.lcd("RIGHT detected", "Forward")
                             elif self.right_state == 'forward':
                                 if t - self.right_ts < self.right_forward_time:
@@ -690,8 +690,8 @@ class SelfDrivingNode(Node):
                                         self.pid.clear()
                                         self.stuck_count += 1
                                         if self.stuck_count > 5:
-                                            twist.linear.x = self.slow_down_speed
-                                            twist.angular.z = -0.6
+                                            twist.linear.x = 0.22
+                                            twist.angular.z = -0.7
                                             self.after_turn = True
                                         self.mecanum_pub.publish(twist)
                                     continue
@@ -699,7 +699,7 @@ class SelfDrivingNode(Node):
                                     self.right_state = 'turning'
                                     self.right_ts = t
                                     self.red_ignore_until = now() + self.right_turn_time + 0.2
-                                    self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
+                                    #self.get_logger().info('\033[1;36m[RIGHT] TURNING start\033[0m')
                                     self.lcd("RIGHT start", "Turning...")
                             elif self.right_state == 'turning':
                                 if t - self.right_ts < self.right_turn_time:
@@ -731,11 +731,11 @@ class SelfDrivingNode(Node):
                                     self.blink_state = False
                                     self.last_blink_time = now()      # (선택) 주기 기준 재설정
 
-                                    self.get_logger().info(
-                                        f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
-                                    )
+                                    #self.get_logger().info(
+                                    #    f'\033[1;31m[CW] START IGNORE after RIGHT (cooldown {self.crosswalk_cooldown_duration:.1f}s)\033[0m'
+                                    #)
                                     self.set_rgb_color(0, 255, 0)  # 주행 (초록)
-                                    self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
+                                    #self.get_logger().info('\033[1;36m[RIGHT] DONE → IDLE\033[0m')
                                     self.lcd("RIGHT completed", "Lanedetect start")
 
                         # === PARK FSM 시작 ===
@@ -757,7 +757,7 @@ class SelfDrivingNode(Node):
                                 self.cw_state = 'idle'          # CW STOP 상태가 남아 파킹 FSM 막는 것 방지
                                 self.cw_ts = None
                                 self.crosswalk_detected = False
-                                self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
+                                #self.get_logger().info('\033[1;35m[PARK] FORWARD start\033[0m')
                                 self.lcd("PARK detected", "Forward")
                         
                         elif self.park_state == 'forward':
@@ -770,7 +770,7 @@ class SelfDrivingNode(Node):
                             else:
                                 self.park_state = 'strafe'
                                 self.park_ts = t
-                                self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
+                                #self.get_logger().info('\033[1;35m[PARK] STRAFE start\033[0m')
                                 self.lcd("PARK start", "Parking...")
 
                         elif self.park_state == 'strafe':
@@ -784,7 +784,7 @@ class SelfDrivingNode(Node):
                             else:
                                 self.park_state = 'done'
                                 self.park_ts = None
-                                self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
+                                #self.get_logger().info('\033[1;35m[PARK] DONE\033[0m')
                                 self.park_hold_end_ts = now() + 10.0
                                 self.lcd("PARK complete!", "Good Bye!")
                                 
@@ -795,7 +795,7 @@ class SelfDrivingNode(Node):
                             self.start = False
                             self.park_cnt = 0
                             self.right_cnt = 0
-                            self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
+                            #self.get_logger().info('\033[1;35m[PARK] DONE → HOLD\033[0m')
 
                             # RGB LED 순환 점멸
                             self.blink_all_leds(t)
@@ -849,8 +849,8 @@ class SelfDrivingNode(Node):
                         self.pid.clear()
                         self.stuck_count += 1
                         if self.stuck_count > 5:
-                            twist.linear.x = self.slow_down_speed
-                            twist.angular.z = -0.6
+                            twist.linear.x = 0.22
+                            twist.angular.z = -0.7
                             self.after_turn = True
 
                             # 8프레임 이상이면 '실제 회전'으로 간주
@@ -925,7 +925,8 @@ class SelfDrivingNode(Node):
         self.green_seen = False 
         # 쿨다운 활성 여부(FSM 기준). 콜백에서는 cross_walk만 무시하고 나머지는 처리.
         ignore_crosswalk = (
-            (self.cw_state == 'cooldown')
+            self.startup_gate_active
+            or (self.cw_state == 'cooldown')
             or (self.park_state != 'idle')
             or (self.right_state != 'idle')
         )
@@ -951,7 +952,7 @@ class SelfDrivingNode(Node):
                 center_y = int((y1 + y2) / 2)
                 # self.red_ignore_until = max(self.red_ignore_until or 0.0, now() + 0.6)
 
-                if score > 0.5 and y2 > frame_height * 0.68 and aspect_ratio > 2.0:
+                if score > 0.5 and y2 > frame_height * 0.68 and aspect_ratio > 1.8:
                     if score > max_score:
                         max_score = score
                         self.crosswalk_detected = True
@@ -963,7 +964,7 @@ class SelfDrivingNode(Node):
                         if self.cw_state == 'idle':
                             self.red_ignore_until = now() + self.defer_tl_until_cw_checked
                     
-                        self.get_logger().info(f'\033[1;32m[CW] Score: {score} y2: {y2}\033[0m')
+                        #self.get_logger().info(f'\033[1;32m[CW] Score: {score} y2: {y2}\033[0m')
 
             if obj.class_name == 'right':
                 score = obj.score
@@ -974,7 +975,7 @@ class SelfDrivingNode(Node):
 
                 if score > 0.1 and y2 > frame_height * 0.1:
                     self.right_seen = True
-                    self.get_logger().info(f'\033[1;36m[RIGHT]Score: {score} y2: {y2}\033[0m')
+                    #self.get_logger().info(f'\033[1;36m[RIGHT]Score: {score} y2: {y2}\033[0m')
             
             if obj.class_name == 'parking':
                 score = obj.score
@@ -985,7 +986,7 @@ class SelfDrivingNode(Node):
 
                 if score > 0.1 and y2 > frame_height * 0.1:
                     self.park_seen = True   # <-- 추가: 파킹 관측 라치용
-                    self.get_logger().info(f'\033[1;35m[PARK]Score: {score} y2: {y2}\033[0m')
+                    #self.get_logger().info(f'\033[1;35m[PARK]Score: {score} y2: {y2}\033[0m')
 
             if obj.class_name == 'light_red':
                 score = obj.score
@@ -1004,7 +1005,7 @@ class SelfDrivingNode(Node):
                         # ▼ 추가: 신호를 "처음 보기 시작"한 시각 (CW 판단할 여유를 주기 위해)
                         if self.first_light_seen_ts is None and self.cw_state == 'idle':
                             self.first_light_seen_ts = now()
-                        self.get_logger().info(f'\033[1;35m[RED]Score: {score} y2: {y2}\033[0m')
+                        #self.get_logger().info(f'\033[1;35m[RED]Score: {score} y2: {y2}\033[0m')
             
             if obj.class_name == 'light_green':
                 score = obj.score
@@ -1016,7 +1017,7 @@ class SelfDrivingNode(Node):
                     # ▼ 추가: 신호를 "처음 보기 시작"한 시각 (CW 판단할 여유를 주기 위해)
                     if self.first_light_seen_ts is None and self.cw_state == 'idle':
                         self.first_light_seen_ts = now()
-                    self.get_logger().info(f'\033[1;32m[GREEN]Score: {score} y2: {y2}\033[0m')
+                    #self.get_logger().info(f'\033[1;32m[GREEN]Score: {score} y2: {y2}\033[0m')
 
         self.crosswalk_distance = cw_best_center_y if self.crosswalk_detected else 0
 
