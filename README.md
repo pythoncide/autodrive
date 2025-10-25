@@ -27,12 +27,12 @@
 
 ## 📌 주요 노드
 영상 → 객체 인식 → FSM 판단 → 모터/LED/LCD 제어 로 이어지는 구조로 동작합니다.
-- /ascamera/camera_publisher : 카메라 영상 publish
-- /yolov5_ros2 : ONNX 기반 객체 인식
-- /self_driving : FSM + PID 제어
-- /ros_robot_controller : 바퀴/모터 제어
-- /led_controller : LED 하드웨어 제어
-- /lcd_controller : LCD 출력
+- `/ascamera/camera_publisher` : 카메라 영상 publish
+- `/yolov5_ros2` : ONNX 기반 객체 인식
+- `/self_driving` : FSM + PID 제어
+- `/ros_robot_controller` : 바퀴/모터 제어
+- `/led_controller` : LED 하드웨어 제어
+- `/lcd_controller` : LCD 출력
 
 ## 📂 참조 링크
 - 🎥 시연 영상: [Youtube](https://youtu.be/eJriFnFVGAk)
