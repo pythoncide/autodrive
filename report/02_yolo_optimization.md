@@ -2,7 +2,7 @@
 
 ## 🚩 배경
 
-초기에는 YOLOv5s (.pt) 모델을 사용했지만, Raspberry Pi 4B의 CPU 환경에서 추론 속도가 매우 느렸습니다.
+초기에는 YOLOv5s (.pt) 모델을 사용했지만, Raspberry Pi 4B의 CPU 환경에서 추론 속도가 매우 느렸습니다.  
 ROS2 토픽 `/yolov5_ros2/object_detect`의 발행 주기가 평균 **0.3~0.7Hz** 수준이었고,
 객체 인식–제어 간의 지연 때문에 실시간 주행이 불가능한 상태였습니다.
 ```
@@ -21,7 +21,7 @@ average rate: 0.417 min: 0.338s max: 42.267s std dev: 7.41s window: 33
 | **⑤ ONNX 변환**        | `.pt` → `.onnx` 변환 후 `onnxruntime` 사용 | **성능 대폭 향상 (약 3배 개선)**                |
 
 ## ⚙️ 최종 적용 모델: YOLOv5s (ONNX)
-모델을 .onnx 형식으로 변환한 후, PyTorch 대신 onnxruntime 기반 추론을 사용했습니다.
+모델을 **.onnx** 형식으로 변환한 후, PyTorch 대신 onnxruntime 기반 추론을 사용했습니다.  
 추론 그래프가 정적으로 최적화되어, Python 인터프리터 레벨의 오버헤드가 제거되었습니다.
 ```
 ❯ ros2 topic hz /yolov5_ros2/object_detect
@@ -60,8 +60,7 @@ After (.onnx)
 ```
 
 ## 💬 회고
-이번 개선 과정은 단순히 YOLO 모델의 크기를 줄이는 게 아니라,
-추론 엔진 자체를 경량화하는 방향으로 접근한 것이 핵심이었습니다.
+이번 개선 과정은 단순히 YOLO 모델의 크기를 줄이는 게 아니라, 추론 엔진 자체를 경량화하는 방향으로 접근한 것이 핵심이었습니다.  
 결과적으로 ONNX Runtime 기반 모델이 정확도 손실 없이 실시간 주행이 가능한 최적 솔루션이 되었습니다.
 
 ---
