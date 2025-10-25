@@ -96,7 +96,7 @@ YOLO 인식 이벤트에 따라 상태 기반 FSM으로 행동을 수행합니�
 ```
 Camera
  ┣━ YOLOv5_ROS2 → /yolov5_ros2/object_detect
- ┣━ LaneDetect → lane_x, lane_angle
+ ┣━ lane_detect → lane_x, lane_angle
  ┗━ SelfDriving(FSM)
        ┣━ PID 제어
        ┣━ right / parking / cross_walk / light_* 처리
