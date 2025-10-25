@@ -4,30 +4,22 @@
 각 기능은 ROS2 노드 단위로 분리되어 병렬적으로 동작하며, SelfDriving 노드가 모든 정보를 통합하여 주행 명령을 결정합니다.
 
 ## 🛣️ 1. 차선 인식 주행 (Lane Detection)
-### 구현 개요
+카메라 입력을 기반으로 OpenCV 영상처리를 수행하여 차선을 검출하고,
+PID 제어를 통해 차량이 차선을 따라 주행하도록 합니다.
 
-카메라 입력 영상을 기반으로 OpenCV 영상처리를 통해 차선을 인식하고,
-PID 제어 알고리즘으로 조향각을 계산하여 차선을 따라 주행하는 기능입니다.
+### 처리 흐름
+1. ROI 설정 후 Binary Mask 생성
+2. Contour 기반 차선 중심 좌표 추출
+3. 오프셋(offset) 계산
+4. 오차에 PID 적용하여 조향각(angular.z) 결정
+5. 선형 속도(linear.x)는 상황에 따라 감속/유지
 
-### 주요 단계
-
-1. ROI(Region of Interest) 설정으로 관심 영역만 추출
-2. Grayscale → Gaussian Blur → Canny Edge Detection 적용
-3. Hough Transform 으로 직선 검출
-4. 검출된 차선의 중심 좌표를 계산하고 오프셋(offset) 산출
-5. 오프셋 값에 PID 제어기를 적용해 회전각(angular.z) 계산
-
-### 특징 및 개선
-
-- 차선 일부가 가려져도 직선 보간(line fitting) 으로 주행 경로 유지
-- PID 튜닝을 통해 직선에서는 부드럽게, 곡선에서는 민감하게 반응하도록 조정
-- 오프셋 값과 속도를 연동하여 코너링 시 속도 자동 감속
-
-> “lane_detect” 노드는 `/camera/image_raw`를 구독하고,
-PID 보정값을 `/cmd_vel`로 퍼블리시합니다.
+### 특징
+- ROI 기반 가중치 합산 방식으로 안정적 중심점 계산
+- 커브 구간 진입 시 속도 자동 감속
+- PID 수치 (코드 기준): `PID(0.28, 0.0, 0.04)`
 
 ## 🚦 2. 객체 인식 기반 제어 (Object Detection)
-### 구현 개요
 YOLOv5 모델을 활용하여 횡단보도, 신호등, 주차·우회전 표지판 등의 객체를 탐지하고,
 인식 결과에 따라 주행 상태를 변경합니다.
 
@@ -36,40 +28,53 @@ YOLOv5 모델을 활용하여 횡단보도, 신호등, 주차·우회전 표지�
 - 인식 결과를 `/yolov5_ros2/object_detect` 토픽으로 송신
 - `SelfDriving` 노드가 이를 구독하여 상태 전환을 결정
 
-### 상태 전환 로직 예시
-| 인식 객체               | 동작       | 설명                       |
-| ------------------- | -------- | ------------------------ |
-| `crosswalk`         | 정지       | 1초간 정지 후 주행 재개           |
-| `traffic_light_red` | 정지       | 신호 대기                    |
-| `right_sign`        | 회전       | 일정 각속도(`angular.z`)로 우회전 |
-| `park_sign`         | 주차 루틴 진입 | 속도 감소 → 정지 → 후진 → 종료     |
-
-### 특징
-- YOLOv5s(ONNX) 모델 사용으로 1.6Hz 수준의 실시간 추론 가능
-- 객체별 confidence threshold를 다르게 설정하여 오인식 최소화
-- 인식 이벤트와 PID 주행 루프가 동시에 작동할 수 있도록 비동기 구조 적용
+### 인식 클래스 (`self_driving.py` 코드 기준)
+| 클래스명 | 의미 | FSM 동작 유무 |
+|---|---|---|
+| `cross_walk` | 횡단보도 | ✅ (일시 정지) |
+| `light_red` | 빨간불 | ✅ (정지 유지) |
+| `light_green` | 초록불 | ✅ (출발/통과) |
+| `light_yellow` | 노란불 | ✅ (상황 유지) |
+| `parking` | 주차 표지 | ✅ (주차 FSM) |
+| `right` | 우회전 표지 | ✅ (우회전 FSM) |
+| `straight` | 직진 표지 | ❌ (행동 없음, 인식만 함) |
 
 ## 🅿️ 3. 주차 및 회전 로직 (Parking & Turning)
-### 구현 개요
-SelfDriving 노드 내에서 주차·회전 상태를 관리하는 상태 머신(state machine) 구조로 설계했습니다.
+YOLO 인식 이벤트에 따라 상태 기반 FSM으로 행동을 수행합니다.
 
-### 주요 흐름
-1. “park_sign” 탐지 시 → **주차 모드 진입**
-2. 속도(linear.x)를 점진적으로 감소시켜 정지
-3. 일정 시간 후 후진 동작 → 주차 완료
-4. “right_sign” 인식 시 → 일정 각속도(angular.z)로 회전
-5. 회전 종료 후 PID 제어 루프로 복귀
+### 우회전 FSM
+`idle → forward → turning → idle`
 
-### 특징
-- 회전 각도와 지속 시간(turn_time)을 변수로 조정 가능
-- 회전 중에는 차선 인식 콜백을 일시 중단하여 노이즈 방지
+**조건:**
+- `right` 일정 프레임 이상 연속 감지 시 forward 단계 진입  
+- 이후 선회 시간만큼 조향 유지 후 PID 주행 복귀
+
+### 주차 FSM
+`idle → forward → strafe → done`
+
+**조건:**
+- `parking` 감지 시 주차 시퀀스 진입  
+- 전진 → Y축 이동 → LED 점멸 → 주차 완료
 - 주차 후 LED가 자동으로 빨강색으로 변경되어 상태 표시
 
-## 💡 4. 하드웨어 피드백 제어 (LED·LCD·Button)
+## 🚏 4. 횡단보도 & 신호등 FSM
+
+횡단보도와 신호등은 상호 간섭이 있기 때문에 FSM 기반으로 처리합니다.
+
+### 횡단보도 FSM
+`idle → stopping(정지) → cooldown(일정 시간 무시) → idle`
+
+### 신호등 처리
+- `light_red` → 정지 유지
+- `light_green` → 출발
+- `light_yellow` → 유지
+- 횡단보도 FSM과 충돌 시, **횡단보도 이벤트 우선 처리**
+
+## 💡 5. 하드웨어 피드백 제어 (LED·LCD·Button)
 ### LED 제어
-- ROS2 토픽 `/led_cmd` 구독
-- 주행 상태에 따라 색상 변경
-- 점멸(깜빡임)은 타이머 기반으로 일정 주기 유지
+- ROS2 토픽 `/led_cmd` 구독 (led_controller 노드)
+- SelfDriving FSM 상태에 따라 Publish
+- 점멸은 self_driving 타이머 기반, 제어는 led_controller에서 수행
 
 | 상태   | 색상    | 의미       |
 | ---- | ----- | -------- |
@@ -78,8 +83,8 @@ SelfDriving 노드 내에서 주차·회전 상태를 관리하는 상태 머신
 | 정지   | 🔴 빨강 | 대기/주차 상태 |
 
 ### LCD 출력
-- 현재 주행 모드(주행/회전/정지)와 인식 객체명을 표시
-- `std_msgs/String` 메시지를 통해 텍스트 갱신
+- ROS2 토픽 `/ui/lcd` 구독 (lcd_controller 노드)
+- SelfDriving에서 문자열 Publish → LCD 표시
 
 ### 버튼 입력
 - ROS2 메시지 `/button_state`를 통해 입력 감지
@@ -90,14 +95,14 @@ SelfDriving 노드 내에서 주차·회전 상태를 관리하는 상태 머신
 ## ✨ 통합 구조
 ```
 Camera
- ┣━ YOLOv5_ROS2 (object_detect)
- ┣━ LaneDetect (lane_info)
- ┗━ SelfDriving Node
+ ┣━ YOLOv5_ROS2 → /yolov5_ros2/object_detect
+ ┣━ LaneDetect → lane_x, lane_angle
+ ┗━ SelfDriving(FSM)
        ┣━ PID 제어
-       ┣━ 상태 전환 (turn/park)
+       ┣━ right / parking / cross_walk / light_* 처리
        ┗━ LED, LCD, Button 제어
 ```
-각 기능은 독립된 ROS2 노드로 동작하며, SelfDriving 노드가 중심에서 판단·명령을 조정합니다.
-이 구조를 통해 자율주행 로봇은 인식–판단–제어의 전체 루프를 실시간으로 수행할 수 있습니다.
+본 기능들을 통해 차량은 **라인 추종–객체 인식–상태 이벤트 제어–피드백 출력**이 모두
+동기적으로 동작하는 자율주행을 수행합니다.
 
 ---

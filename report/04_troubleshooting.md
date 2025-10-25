@@ -41,9 +41,9 @@ average rate: 1.721 min: 0.377s max: 0.899s std dev: 0.17s window: 56
 이전 상태를 덮어쓰는 현상이었습니다.
 
 ### 해결 방법
-- LED 노드를 Timer 기반으로 주기 실행하도록 변경
-- blink_state 변수를 두어 한 주기마다 명확한 ON/OFF 토글 수행
-- ROS2 메시지 타입을 std_msgs/Bool로 단순화해 신호 혼선을 방지
+- LED 제어를 `led_controller` 노드의 Timer에서 수행하고, `self_driving`는 상태가 변할 때만 명령을 publish하도록 구조를 분리
+- blink_state 변수를 두어 한 주기마다 명확하게 ON/OFF를 토글
+
 ```
 def blink_led(self):
     self.blink_state = not self.blink_state

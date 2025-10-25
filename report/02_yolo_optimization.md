@@ -3,8 +3,7 @@
 ## 🚩 배경
 
 초기에는 YOLOv5s (.pt) 모델을 사용했지만, Raspberry Pi 4B의 CPU 환경에서 추론 속도가 매우 느렸습니다.  
-ROS2 토픽 `/yolov5_ros2/object_detect`의 발행 주기가 평균 **0.3~0.7Hz** 수준이었고,
-객체 인식–제어 간의 지연 때문에 실시간 주행이 불가능한 상태였습니다.
+ROS2 토픽 `/yolov5_ros2/object_detect`의 발행 주기가 평균 **0.3~0.7Hz** 수준이었고, 객체 인식–제어 간의 지연 때문에 실시간 주행이 불가능한 상태였습니다.
 ```
 ❯ ros2 topic hz /yolov5_ros2/object_detect
 average rate: 0.352 min: 0.352s max: 12.691s std dev: 3.93s window: 8
