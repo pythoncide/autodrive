@@ -36,7 +36,7 @@
 
 ## 📂 참조 링크
 - 🎥 시연 영상: [Youtube](https://youtu.be/eJriFnFVGAk)
-- 📄 프로젝트 문서: [REPORT/](https://github.com/pythoncide/autodrive/tree/docs/report)
+- 📄 프로젝트 문서: [REPORT/](https://github.com/pythoncide/autodrive/tree/main/report)
 
 ## 👥 기타 정보
 - 팀원: [박현욱](https://github.com/Ian-Spangler), [성시경](https://github.com/GolbaengE), [염수림](https://github.com/rimit-rim)
